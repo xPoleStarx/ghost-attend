@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
     AGENT_LLM_PROVIDER: str = "google"  # google | openai | anthropic
-    AGENT_LLM_MODEL: str = "gemini-3.1-flash-lite"
-    VISION_LLM_MODEL: str = "gemini-3.1-flash-lite"
+    AGENT_LLM_MODEL: str = "gemini-3.1-flash-lite-preview"
+    VISION_LLM_MODEL: str = "gemini-3.1-flash-lite-preview"
 
     # ── Veritabanı ──
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost/ghostattend"
