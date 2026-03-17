@@ -138,6 +138,8 @@ async def schedule_course(
         day=day,
         trigger=f"{trigger_time.hour:02d}:{trigger_time.minute:02d}",
         start=start_time,
+        user_id=user_id,
+        early_minutes=early_minutes,
     )
 
     return job_id
@@ -275,6 +277,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
         "scheduler.all_courses_scheduled",
         user_id=user_id,
         count=len(job_ids),
+        job_ids=job_ids,
     )
 
     return job_ids

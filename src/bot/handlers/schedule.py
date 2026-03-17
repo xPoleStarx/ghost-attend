@@ -369,10 +369,12 @@ async def _handle_edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("⬅️ Geri", callback_data="courses_edit")],
             ])
 
+            end_text = course.get("bitis_saati") or "?"
+
             await query.edit_message_text(
                 text=(
                     f"📖 **{safe_course_name}**\n\n"
-                    f"📅 {course['gun']} {course['baslangic_saati']}–{course['bitis_saati']}\n"
+                    f"📅 {course['gun']} {course['baslangic_saati']}–{end_text}\n"
                     f"👨‍🏫 {safe_instructor}\n"
                     f"🖥️ {course.get('platform', 'unknown').upper()}\n"
                     f"🎯 {online_text}"
@@ -479,11 +481,12 @@ async def _handle_chat_online_start(update: Update, context: ContextTypes.DEFAUL
 
     lines = ["🤖 **Online Ders Düzenleme Chatbot**\n"]
     lines.append("Online ve belirsiz dersler:\n")
-    for i, c in enumerate(online_courses):
+        for i, c in enumerate(online_courses):
         status = "🟢 Online" if c.get("online_mi") is True else "❓ Belirsiz"
-        lines.append(
-            f"  {i+1}. **{c['ders_adi']}** — {c['gun']} {c['baslangic_saati']}–{c['bitis_saati']} [{status}]"
-        )
+            end_text = c.get("bitis_saati") or "?"
+            lines.append(
+                f"  {i+1}. **{c['ders_adi']}** — {c['gun']} {c['baslangic_saati']}–{end_text} [{status}]"
+            )
 
     lines.append("\n💬 Bu dersler hakkında değişiklik yapmak için yazabilirsin.")
     lines.append("Örnek: _'Kariyer Planlama aslında Salı 14:00'te'_")

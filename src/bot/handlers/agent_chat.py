@@ -330,9 +330,9 @@ KURALLAR:
 - Sadece JSON döndür, başka metin veya açıklama ekleme.
 - Ders seçerken course_name_query ile en iyi eşleşeni seç. Birden fazla güçlü aday varsa en olası olanı seç ve message içinde ne yaptığını belirt. Emin değilsen, action="reply" ile kullanıcıdan hangi dersi kastettiğini sor.
 - Ders saatini değiştirme isteğinde ders adı NET değilse (sadece \"ders\", \"dersim\" vb. diyorsa) asla update_course_time tool'unu çağırma; action="reply" ile kullanıcıdan ders adını iste.
-- Kullanıcı \"{ders adı} dersine şimdi katıl\", \"hemen {ders adı} dersine gir\" gibi EMİR kipinde net bir istek yazıyorsa:
+- Kullanıcı \"[ders adı] dersine şimdi katıl\", \"hemen [ders adı] dersine gir\" gibi EMİR kipinde net bir istek yazıyorsa:
   - action="tool", tool="start_manual_session" kullan.
-  - message alanında, seçilen ders adını ve saatlerini içeren kısa, samimi bir onay/metin üret (örnek: "Tamam, Kariyer Planlama dersi için hemen derse katılım oturumu başlatıyorum.").
+  - message alanında, seçilen ders adını ve saatlerini içeren kısa, samimi bir onay/metin üret (örnek: \"Tamam, Kariyer Planlama dersi için hemen derse katılım oturumu başlatıyorum.\").
 - Saatler her zaman \"HH:MM\" formatında olmalı ve 24 saatlik zaman kullanılmalı.
 """
 
@@ -630,25 +630,10 @@ KURALLAR:
 
                 if "boşver" in lowered_text or "iptal" in lowered_text or "vazgeç" in lowered_text:
                     context.user_data.pop("pending_manual_join", None)
-                    await update.message.reply_text("Tamam, bu dersi şimdilik elle bırakıyorum. İstersen sonra tekrar söyleyebilirsin.")
+                    await update.message.reply_text(
+                        "Tamam, bu dersi şimdilik elle bırakıyorum. İstersen sonra tekrar söyleyebilirsin."
+                    )
                     return
-
-                attend_lesson_task.delay(
-                    user_id=user.id,
-                    course_id=str(target.id),
-                    course_name=target.name,
-                    dys_url=dys_url or "",
-                    end_time=target.end_time.strftime("%H:%M"),
-                    direct_url=target.direct_url,
-                    dys_search_hint=getattr(target, "dys_search_hint", None),
-                )
-
-                await _safe_delete(processing)
-                await update.message.reply_text(
-                    message
-                    or "✅ Ders için derse katılım oturumu hemen başlatılıyor. Durumu ekran görüntüleriyle ileteceğim."
-                )
-                return
 
             if tool == "cancel_active_session":
                 from src.core.session_cancel import cancel_user_session

@@ -17,17 +17,26 @@ from src.core.logging import get_logger
 log = get_logger(__name__)
 
 
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
 def _run_async(coro):
-    """Senkron Celery worker'da async fonksiyon çalıştır."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import nest_asyncio
-            nest_asyncio.apply()
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        pass
-    return asyncio.run(coro)
+    """
+    Senkron Celery worker'da async fonksiyon çalıştır.
+
+    Her worker process'i için tek bir event loop oluşturur ve tüm async
+    görevleri bu loop üzerinde çalıştırır. Böylece asyncpg/SQLAlchemy
+    bağlantıları farklı loop'lara dağılmadığı için
+    \"Future attached to a different loop\" ve
+    \"Event loop is closed\" tipindeki hatalar engellenir.
+    """
+    global _worker_loop
+
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_worker_loop)
+
+    return _worker_loop.run_until_complete(coro)
 
 
 @celery_app.task(

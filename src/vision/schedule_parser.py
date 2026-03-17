@@ -199,6 +199,13 @@ async def parse_schedule_image(
             parse_warnings=data.get("parse_warnings", []),
         )
 
+        # Eksik alanları normalize et
+        for course in result.courses:
+            if course.bitis_saati is None:
+                result.parse_warnings.append(
+                    f"'{course.ders_adi}' dersi için bitiş saati belirtilmedi; lütfen elle kontrol et."
+                )
+
         log.info(
             "vision.parse_complete",
             course_count=len(result.courses),
@@ -363,6 +370,12 @@ async def parse_schedule_images(
             parse_warnings=data.get("parse_warnings", []),
         )
 
+        for course in result.courses:
+            if course.bitis_saati is None:
+                result.parse_warnings.append(
+                    f"'{course.ders_adi}' dersi için bitiş saati belirtilmedi; lütfen elle kontrol et."
+                )
+
         log.info(
             "vision.multi_parse_complete",
             course_count=len(result.courses),
@@ -402,9 +415,14 @@ def format_courses_for_telegram(result: ScheduleParseResult) -> str:
         course_name = escape_md(course.ders_adi, version=1)
         instructor = escape_md(course.ogretim_uyesi or "Belirtilmemiş", version=1)
 
+        if course.bitis_saati:
+            time_text = f"{course.baslangic_saati}–{course.bitis_saati}"
+        else:
+            time_text = f"{course.baslangic_saati}–?"
+
         lines.append(
             f"{i}. {confidence} **{course_name}**\n"
-            f"   {emoji} {course.gun} {course.baslangic_saati}–{course.bitis_saati}\n"
+            f"   {emoji} {course.gun} {time_text}\n"
             f"   👨‍🏫 {instructor}\n"
             f"   🖥️ {platform_text}"
         )

@@ -83,6 +83,27 @@ MOCK_EMPTY_COURSES = """
 ```
 """
 
+MOCK_MISSING_END_TIME = """
+```json
+{
+  "courses": [
+    {
+      "ders_adi": "Sürdürülebilirlik",
+      "gun": "Çarşamba",
+      "baslangic_saati": "00:19",
+      "bitis_saati": null,
+      "ogretim_uyesi": null,
+      "platform": "unknown",
+      "online_mi": true,
+      "guvven_skoru": 0.9
+    }
+  ],
+  "raw_text": "00.19da sürdürülebilirlik dersim başlıyor online her çarşamba",
+  "parse_warnings": ["Dersin bitiş saati ve öğretim üyesi bilgisi sağlanmamıştır."]
+}
+```
+"""
+
 MOCK_BARE_JSON = """
 {
   "courses": [
@@ -184,6 +205,23 @@ class TestParseScheduleImage:
 
             assert len(result.courses) == 0
             assert len(result.parse_warnings) == 1
+
+    @pytest.mark.asyncio
+    async def test_parse_missing_end_time_does_not_crash_and_adds_warning(self):
+        """bitis_saati null olduğunda parser hata vermemeli ve uyarı eklemeli."""
+        with patch(
+            "src.vision.schedule_parser._parse_with_google",
+            new_callable=AsyncMock,
+            return_value=MOCK_MISSING_END_TIME,
+        ):
+            result = await parse_schedule_image(b"fake_image", provider="google")
+
+        assert len(result.courses) == 1
+        course = result.courses[0]
+        assert course.ders_adi == "Sürdürülebilirlik"
+        assert course.bitis_saati is None
+        # Hem LLM'den gelen hem bizim eklediğimiz uyarı bulunmalı
+        assert any("bitiş saati" in w for w in result.parse_warnings)
 
     @pytest.mark.asyncio
     async def test_parse_malformed_json(self):

@@ -526,8 +526,9 @@ async def handle_onboard_chat_online(update: Update, context: ContextTypes.DEFAU
     for i, c in enumerate(online_courses):
         status = "🟢 Online" if c.get("online_mi") is True else "❓ Belirsiz"
         safe_name = escape_dynamic_text(c["ders_adi"], parse_mode="Markdown")
+        end_text = c.get("bitis_saati") or "?"
         lines.append(
-            f"  {i+1}. **{safe_name}** — {c['gun']} {c['baslangic_saati']}–{c['bitis_saati']} [{status}]"
+            f"  {i+1}. **{safe_name}** — {c['gun']} {c['baslangic_saati']}–{end_text} [{status}]"
         )
 
     lines.append("\n💬 Bu dersler hakkında değişiklik yapmak için yazabilirsin.")

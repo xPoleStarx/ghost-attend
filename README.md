@@ -57,6 +57,14 @@ bash scripts/setup.sh
 .\scripts\setup.ps1
 ```
 
+### Logları Görüntüleme
+
+Servisler Docker ile ayağa kalktıktan sonra Telegram botu ve worker loglarını takip etmek için:
+
+```powershell
+docker compose -f docker-compose.dev.yml logs -f bot worker
+```
+
 > 🪄 **Not:** Kurulum betiği size ihtiyacı olan API anahtarlarını sırayla soracak, şifrelerinizi tamamen otonom üretecek ve onayınızla birlikte sistemi ayağa kaldıracaktır. Ekstra dosya düzenlemenize veya komut çalıştırmanıza gerek yoktur!
 
 📖 Gelişmiş yapılandırmalar için: [docs/SETUP.md](docs/SETUP.md)

@@ -20,7 +20,7 @@ class ParsedCourse(BaseModel):
     ders_adi: str
     gun: Literal["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     baslangic_saati: str  # "HH:MM" formatı
-    bitis_saati: str  # "HH:MM" formatı
+    bitis_saati: str | None = None  # "HH:MM" formatı, None = eksik
     ogretim_uyesi: str | None = None
     platform: Literal["teams", "zoom", "meet", "unknown"] = "unknown"
     online_mi: bool | None = None  # None = belirsiz

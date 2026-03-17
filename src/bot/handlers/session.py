@@ -23,12 +23,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     from src.db.connection import get_session
     from src.db.repositories.course import CourseRepository
+    from src.db.repositories.session import SessionRepository
     from src.scheduler.lesson_scheduler import get_user_jobs
 
+    recent_sessions = []
     try:
         async with get_session() as session:
-            repo = CourseRepository(session)
-            courses = await repo.get_user_courses(user.id, active_only=True)
+            course_repo = CourseRepository(session)
+            courses = await course_repo.get_user_courses(user.id, active_only=True)
+
+            session_repo = SessionRepository(session)
+            recent_sessions = await session_repo.get_recent_sessions(user.id, limit=1)
     except Exception as e:
         log.error("bot.status_db_error", user_id=user.id, error=str(e))
         courses = []
@@ -77,6 +82,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             lines.append(f"- {job_name}\n  `next_run`: `{next_run}`")
     else:
         lines.append("\n⏱️ **Zamanlayıcı Job'ları**\n- (Bu kullanıcı için job bulunamadı)")
+
+    # Son oturum özeti (varsa)
+    if recent_sessions:
+        last = recent_sessions[0]
+        status = last.status
+        reason = last.failure_reason or "-"
+        lines.append(
+            "\n🧾 **Son Oturum Özeti**\n"
+            f"- status: `{status}`\n"
+            f"- failure_reason: `{reason}`"
+        )
 
     lines.append(f"\nToplam: {len(courses)} ders (DB) · {len(jobs)} job (scheduler)")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

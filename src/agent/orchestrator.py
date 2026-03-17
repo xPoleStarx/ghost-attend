@@ -109,31 +109,79 @@ class SessionOrchestrator:
                 try:
                     username, password, _ = await self.vault.get_credentials(self.user_id)
                 except CredentialNotFound as e:
-                    log.error("orchestrator.credential_not_found", error=str(e))
+                    log.error(
+                        "orchestrator.credential_not_found",
+                        error=str(e),
+                        user_id=self.user_id,
+                    )
                     if self.notifier:
                         await self.notifier.send_error(
                             user_id=self.user_id,
                             error_code="CREDENTIAL_NOT_FOUND",
                             details="Kayıtlı giriş bilgisi bulamadım.",
                         )
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            await self.session_repo.update_status(
+                                self.session_uuid,
+                                "failed",
+                                failure_reason="credential_not_found",
+                            )
+                        except Exception as ex:
+                            log.warning(
+                                "orchestrator.session_status_update_failed",
+                                error=str(ex),
+                            )
                     return {"status": "error", "error": "credential_not_found"}
                 except CredentialDecryptFailed as e:
-                    log.error("orchestrator.credential_decrypt_failed", error=str(e))
+                    log.error(
+                        "orchestrator.credential_decrypt_failed",
+                        error=str(e),
+                        user_id=self.user_id,
+                    )
                     if self.notifier:
                         await self.notifier.send_error(
                             user_id=self.user_id,
                             error_code="CREDENTIAL_ERROR_KEY_MISMATCH",
                             details="Mevcut veriyi çözerken hata oluştu (muhtemelen anahtar değişti).",
                         )
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            await self.session_repo.update_status(
+                                self.session_uuid,
+                                "failed",
+                                failure_reason="credential_decrypt_failed",
+                            )
+                        except Exception as ex:
+                            log.warning(
+                                "orchestrator.session_status_update_failed",
+                                error=str(ex),
+                            )
                     return {"status": "error", "error": "credential_decrypt_failed"}
                 except Exception as e:
-                    log.error("orchestrator.credential_error", error=str(e))
+                    log.error(
+                        "orchestrator.credential_error",
+                        error=str(e),
+                        user_id=self.user_id,
+                    )
                     if self.notifier:
                         await self.notifier.send_error(
                             user_id=self.user_id,
                             error_code="CREDENTIAL_ERROR",
                             details="❌ Giriş bilgilerin okunurken beklenmeyen bir hata oluştu.",
                         )
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            await self.session_repo.update_status(
+                                self.session_uuid,
+                                "failed",
+                                failure_reason="credential_error",
+                            )
+                        except Exception as ex:
+                            log.warning(
+                                "orchestrator.session_status_update_failed",
+                                error=str(ex),
+                            )
                     return {"status": "error", "error": "credential_error"}
 
         # DYS stratejisi
