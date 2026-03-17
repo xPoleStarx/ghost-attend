@@ -66,7 +66,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/cancel — Aktif oturumu durdur (gerçek temizlik + cancel flag)."""
+    """/cancel — Bu kullanıcının aktif oturumunu ve tüm verilerini temizle."""
     user = update.effective_user
     log.info("bot.cancel_session", user_id=user.id)
 
@@ -74,28 +74,35 @@ async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_T
 
     from src.core.session_cancel import cancel_user_session
     from src.db.connection import get_session
+    from src.db.repositories.user import UserRepository
+    from src.scheduler.lesson_scheduler import unschedule_all_for_user
 
     async with get_session() as session:
+        # 1) Runtime oturumunu iptal et + Redis temizliği
         result = await cancel_user_session(
             user_id=user.id,
             redis_client=redis_client,
             db_session=session,
         )
+
+        # 2) Kullanıcının tüm zamanlanmış job'larını kaldır
+        removed = await unschedule_all_for_user(user.id)
+        log.info("bot.cancel_unschedule_done", user_id=user.id, removed_jobs=removed)
+
+        # 3) Kullanıcının veritabanındaki tüm verilerini sil
+        repo = UserRepository(session)
+        await repo.delete_user_and_related(user.id)
+
         await session.commit()
 
     # PTB tarafı: conversation state'lerini de temizle
     context.user_data.clear()
 
-    if result["cancel_flag_set"] or result["db_cancelled"] or result["redis_deleted"] > 0:
-        await update.message.reply_text(
-            "⏹️ İptal alındı. Aktif oturum durduruluyor ve geçici veriler temizleniyor.\n"
-            "Tekrar başlamak için /start yazabilirsin."
-        )
-    else:
-        await update.message.reply_text(
-            "⏹️ İptal alındı. Şu anda aktif bir oturum görünmüyor; yine de geçici verileri temizledim.\n"
-            "Tekrar başlamak için /start yazabilirsin."
-        )
+    await update.message.reply_text(
+        "⏹️ İptal alındı.\n"
+        "Bu kullanıcıya ait tüm dersler, oturumlar, bildirimler ve kimlik bilgileri veritabanından silindi.\n"
+        "Tekrar başlamak için /start yazabilirsin."
+    )
 
 
 def get_session_handlers() -> list[CommandHandler]:

@@ -8,7 +8,7 @@ LLM, tool-call benzeri JSON çıktısı üretir; bot bu tool'ları çalıştır�
 from __future__ import annotations
 
 import json
-from datetime import time
+from datetime import time, datetime
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -29,6 +29,40 @@ def _day_to_int(day_tr: str) -> int:
     if day_tr not in DAYS_TR:
         raise ValueError(f"Geçersiz gün: {day_tr}")
     return DAYS_TR[day_tr]
+
+
+def _compute_next_lesson(courses) -> object | None:
+    """
+    Kullanıcının aktif dersleri arasından şu andan itibaren en yakın dersi bul.
+    Haftalık döngü (7 gün) üzerinden en küçük pozitif delta'yı seçer.
+    """
+    if not courses:
+        return None
+
+    now = datetime.now()
+    now_minutes = now.hour * 60 + now.minute
+    today_idx = now.weekday()  # Pazartesi=0
+
+    best_course = None
+    best_delta = None
+
+    for c in courses:
+        # day_of_week: 0-6
+        course_day = int(getattr(c, "day_of_week", 0))
+        start: time = getattr(c, "start_time")
+        course_minutes = start.hour * 60 + start.minute
+
+        day_delta = (course_day - today_idx) % 7
+        if day_delta == 0 and course_minutes <= now_minutes:
+            day_delta = 7
+
+        total_minutes = day_delta * 24 * 60 + (course_minutes - now_minutes)
+
+        if best_delta is None or total_minutes < best_delta:
+            best_delta = total_minutes
+            best_course = c
+
+    return best_course
 
 
 async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -111,6 +145,33 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     "args": {"course_name_query": "string"},
                 },
                 {
+                    "name": "get_next_lesson",
+                    "description": "Şu andan itibaren en yakın aktif dersi bulur ve özetler.",
+                    "args": {},
+                },
+                {
+                    "name": "get_today_lessons",
+                    "description": "Bugünkü tüm aktif dersleri listeler.",
+                    "args": {},
+                },
+                {
+                    "name": "get_session_status",
+                    "description": "Aktif veya en son agent oturumu hakkında bilgi verir.",
+                    "args": {},
+                },
+                {
+                    "name": "start_manual_session",
+                    "description": "Seçilen ders için hemen şimdi derse katılım oturumu başlatır.",
+                    "args": {
+                        "course_name_query": "string (örn: 'Kariyer')",
+                    },
+                },
+                {
+                    "name": "cancel_active_session",
+                    "description": "Varsa aktif derse katılım oturumunu iptal eder.",
+                    "args": {},
+                },
+                {
                     "name": "help",
                     "description": "Kısa örneklerle yardım mesajı üretir.",
                     "args": {},
@@ -119,7 +180,7 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         }
 
         system_prompt = f"""
-Sen GhostAttend'in otonom asistanısın. Kullanıcı Telegram üzerinden doğal dilde istek yazar.
+Sen GhostAttend'in otonom asistanısın. Kullanıcı Telegram üzerinden doğal dilde, Türkçe olarak istek yazar.
 
 ELİNDEKİ DURUM:
 - user_id: {user.id}
@@ -129,9 +190,22 @@ ELİNDEKİ DURUM:
 
 GÖREV:
 - Kullanıcı isteğini en uygun tool ile gerçekleştir.
-- Eğer tool gerekmiyorsa kısa cevap ver.
+- Eğer tool gerekmiyorsa kısa, doğal bir cevap ver.
 
-ÇIKTI FORMATI (SADECE JSON):
+ÖRNEK İSTEK → TOOL EŞLEŞMELERİ:
+- "en yakın ders hangisi" → action=tool, tool="get_next_lesson"
+- "bugün hangi derslerim var" → action=tool, tool="get_today_lessons"
+- "şu an derste misin", "derse katılacak mısın" → action=tool, tool="get_session_status"
+- "kariyer planlama dersini salı 22:22 yap" → action=tool, tool="update_course_time"
+  args: {{"course_name_query": "Kariyer Planlama", "day": "Salı", "start_time": "22:22"}}
+- "yeni ders ekle: Yapay Zeka, Perşembe 10:00-11:30" → action=tool, tool="add_course"
+  args: {{"name": "Yapay Zeka", "day": "Perşembe", "start_time": "10:00", "end_time": "11:30"}}
+- "Kariyer Planlama dersine şimdi katıl" → action=tool, tool="start_manual_session"
+  args: {{"course_name_query": "Kariyer Planlama"}}
+- "derse katılmayı iptal et" → action=tool, tool="cancel_active_session"
+- "derslerimi listele" → action=tool, tool="list_courses"
+
+ÇIKTI FORMATı (SADECE GEÇERLİ JSON):
 ```json
 {{
   "action": "tool" | "reply",
@@ -142,9 +216,10 @@ GÖREV:
 ```
 
 KURALLAR:
-- Sadece JSON döndür, başka metin ekleme.
+- Sadece JSON döndür, başka metin veya açıklama ekleme.
 - Ders seçerken course_name_query ile en iyi eşleşeni seç. Birden fazla güçlü aday varsa en olası olanı seç ve message içinde ne yaptığını belirt.
-- Eksik bilgi varsa action=reply ile net bir soru sor (ama mümkünse mevcut veriden çıkarım yap).
+- Eksik bilgi varsa action="reply" ile kullanıcıya net ve kısa bir soru sor (ama mümkünse mevcut veriden çıkarım yapmaya çalış).
+- Saatler her zaman \"HH:MM\" formatında olmalı ve 24 saatlik zaman kullanılmalı.
 """
 
         raw = await _call_llm(settings.AGENT_LLM_PROVIDER, settings.AGENT_LLM_MODEL, system_prompt, text)
@@ -163,6 +238,9 @@ KURALLAR:
 
         tool = payload.get("tool")
         args = payload.get("args") or {}
+
+        # day_of_week (int) → Türkçe gün adı
+        inv_days = {v: k for k, v in DAYS_TR.items()}
 
         try:
             if tool == "help":
@@ -275,6 +353,164 @@ KURALLAR:
 
                 await _safe_delete(processing)
                 await update.message.reply_text(message or "✅ Ders pasifleştirildi ve zamanlama güncellendi.")
+                return
+
+            if tool == "get_next_lesson":
+                if not courses:
+                    await _safe_delete(processing)
+                    await update.message.reply_text(
+                        "📚 Kayıtlı dersin yok. /upload_schedule ile ders programını ekleyebilirsin."
+                    )
+                    return
+
+                next_course = _compute_next_lesson(courses)
+                if not next_course:
+                    await _safe_delete(processing)
+                    await update.message.reply_text("📚 Yaklaşan bir ders bulamadım.")
+                    return
+
+                safe_name = escape_dynamic_text(next_course.name, parse_mode="Markdown")
+                day_name = inv_days.get(next_course.day_of_week, "?")
+                text_out = (
+                    f"⏰ En yakın dersin:\n\n"
+                    f"📚 **{safe_name}**\n"
+                    f"📅 {day_name} {next_course.start_time.strftime('%H:%M')}–{next_course.end_time.strftime('%H:%M')}"
+                )
+                await _safe_delete(processing)
+                await update.message.reply_text(text_out, parse_mode="Markdown")
+                return
+
+            if tool == "get_today_lessons":
+                today_idx = datetime.now().weekday()
+                today_courses = [c for c in courses if c.day_of_week == today_idx]
+
+                await _safe_delete(processing)
+                if not today_courses:
+                    await update.message.reply_text("📅 Bugün için zamanlanmış ders görünmüyor.")
+                    return
+
+                lines = ["📅 **Bugünkü Derslerin:**\n"]
+                for c in today_courses:
+                    safe_name = escape_dynamic_text(c.name, parse_mode="Markdown")
+                    lines.append(
+                        f"- **{safe_name}** {c.start_time.strftime('%H:%M')}–{c.end_time.strftime('%H:%M')}"
+                    )
+                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                return
+
+            if tool == "get_session_status":
+                from src.db.repositories.session import SessionRepository
+
+                session_repo = SessionRepository(session)
+                active = await session_repo.get_active_session(user.id)
+
+                await _safe_delete(processing)
+
+                if active:
+                    course = next((c for c in courses if c.id == active.course_id), None)
+                    if course:
+                        safe_name = escape_dynamic_text(course.name, parse_mode="Markdown")
+                        day_name = inv_days.get(course.day_of_week, "?")
+                        base = (
+                            f"🎓 Şu anda **{safe_name}** dersi için bir oturum {active.status} durumda.\n"
+                            f"📅 {day_name} {course.start_time.strftime('%H:%M')}–{course.end_time.strftime('%H:%M')}"
+                        )
+                    else:
+                        base = f"🎓 Şu anda bir ders oturumu {active.status} durumda."
+
+                    await update.message.reply_text(base, parse_mode="Markdown")
+                    return
+
+                # Aktif oturum yoksa, en yakın dersi söyle
+                next_course = _compute_next_lesson(courses) if courses else None
+
+                if next_course:
+                    safe_name = escape_dynamic_text(next_course.name, parse_mode="Markdown")
+                    day_name = inv_days.get(next_course.day_of_week, "?")
+                    text_out = (
+                        "Şu anda derste değilim.\n\n"
+                        f"⏰ En yakın dersin **{safe_name}** — "
+                        f"{day_name} {next_course.start_time.strftime('%H:%M')}–{next_course.end_time.strftime('%H:%M')}."
+                    )
+                else:
+                    text_out = "Şu anda derste değilim ve zamanlanmış ders de bulamıyorum."
+
+                await update.message.reply_text(text_out, parse_mode="Markdown")
+                return
+
+            if tool == "start_manual_session":
+                from src.scheduler.tasks import attend_lesson_task
+
+                name_q = str(args.get("course_name_query", "")).strip()
+                if not name_q:
+                    raise ValueError("course_name_query gerekli")
+
+                matches = await course_repo.find_by_name(
+                    user.id, name_q, active_only=True, limit=5
+                )
+                if not matches:
+                    await _safe_delete(processing)
+                    await update.message.reply_text(
+                        f"❌ \"{escape_dynamic_text(name_q, parse_mode='Markdown')}\" ile eşleşen ders bulamadım. /courses ile kontrol edebilirsin.",
+                        parse_mode="Markdown",
+                    )
+                    return
+
+                target = matches[0]
+
+                if not dys_url and not target.direct_url:
+                    await _safe_delete(processing)
+                    await update.message.reply_text(
+                        "❌ Bu ders için DYS adresi veya direkt canlı ders bağlantısı bulunamadı. "
+                        "Önce /upload_schedule ile programı güncellediğinden emin ol."
+                    )
+                    return
+
+                attend_lesson_task.delay(
+                    user_id=user.id,
+                    course_id=str(target.id),
+                    course_name=target.name,
+                    dys_url=dys_url or "",
+                    end_time=target.end_time.strftime("%H:%M"),
+                    direct_url=target.direct_url,
+                    dys_search_hint=getattr(target, "dys_search_hint", None),
+                )
+
+                await _safe_delete(processing)
+                await update.message.reply_text(
+                    message
+                    or "✅ Ders için derse katılım oturumu hemen başlatılıyor. Durumu ekran görüntüleriyle ileteceğim."
+                )
+                return
+
+            if tool == "cancel_active_session":
+                from src.core.session_cancel import cancel_user_session
+
+                redis_client = context.bot_data.get("redis")
+                result = await cancel_user_session(
+                    user_id=user.id,
+                    redis_client=redis_client,
+                    db_session=session,
+                )
+                await session.commit()
+                context.user_data.clear()
+
+                await _safe_delete(processing)
+
+                if (
+                    result.get("cancel_flag_set")
+                    or result.get("db_cancelled")
+                    or result.get("redis_deleted", 0) > 0
+                ):
+                    await update.message.reply_text(
+                        "⏹️ İptal alındı. Aktif oturum durduruluyor ve geçici veriler temizleniyor.\n"
+                        "Tekrar başlamak için /start yazabilirsin."
+                    )
+                else:
+                    await update.message.reply_text(
+                        "⏹️ İptal alındı. Şu anda aktif bir oturum görünmüyor; yine de geçici verileri temizledim.\n"
+                        "Tekrar başlamak için /start yazabilirsin."
+                    )
                 return
 
             await _safe_delete(processing)

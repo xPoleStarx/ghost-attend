@@ -65,27 +65,6 @@ def create_application() -> Application:
     for handler in get_mfa_handlers():
         app.add_handler(handler)
 
-    # ── Cancel komutu (global fallback) ──
-    # Not: ConversationHandler fallbacks / session handler'ı önceliklidir.
-    # Buradaki fallback, beklenmedik bir durumda dahi "temizlik" garantisi sağlar.
-    async def cancel_global(update, context):
-        from src.core.session_cancel import cancel_user_session
-        from src.db.connection import get_session
-
-        user = update.effective_user
-        if not user:
-            return
-
-        redis_client = context.bot_data.get("redis")
-        async with get_session() as session:
-            await cancel_user_session(user_id=user.id, redis_client=redis_client, db_session=session)
-            await session.commit()
-
-        context.user_data.clear()
-        await update.message.reply_text("⏹️ İptal alındı. Geçici veriler temizlendi.")
-
-    app.add_handler(CommandHandler("cancel", cancel_global))
-
     log.info("bot.handlers_registered")
 
     return app

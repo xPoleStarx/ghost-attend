@@ -4,7 +4,7 @@ GhostAttend — User Repository
 Kullanıcı CRUD işlemleri.
 """
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import User
@@ -128,4 +128,27 @@ class UserRepository:
             )
         )
         await self.session.execute(stmt)
+
+    async def delete_user_and_related(self, user_id: int) -> None:
+        """
+        Kullanıcıyı ve ona bağlı tüm verileri sil.
+
+        Not:
+        - credentials ve courses zaten User.relationship üzerinde
+          cascade=\"all, delete-orphan\" + ondelete=\"CASCADE\" ile tanımlı.
+        - agent_sessions ve notifications için önce bu tablolardan silip,
+          ardından User kaydını siliyoruz.
+        """
+        from src.db.models import AgentSession, Notification
+
+        # Önce user_id ile ilişkili oturumlar ve bildirimler
+        await self.session.execute(
+            delete(Notification).where(Notification.user_id == user_id)
+        )
+        await self.session.execute(
+            delete(AgentSession).where(AgentSession.user_id == user_id)
+        )
+
+        # Son olarak kullanıcı kaydını sil (CASCADE ile diğerleri gider)
+        await self.session.execute(delete(User).where(User.id == user_id))
 
