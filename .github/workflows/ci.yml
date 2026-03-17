@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ghostattend_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install
+
+      - name: Install Playwright
+        run: poetry run playwright install chromium --with-deps
+
+      - name: Lint (Ruff)
+        run: poetry run ruff check src/ tests/
+
+      - name: Type check (mypy)
+        run: poetry run mypy src/
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/ghostattend_test
+          REDIS_URL: redis://localhost:6379/0
+          MASTER_ENCRYPTION_KEY: ${{ secrets.TEST_MASTER_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TEST_TELEGRAM_BOT_TOKEN }}
+          ENVIRONMENT: test
+        run: |
+          poetry run pytest tests/unit tests/integration \
+            --cov=src \
+            --cov-report=xml \
+            --cov-fail-under=75 \
+            -v
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Safety (dependency vulnerabilities)
+        run: |
+          pip install safety
+          safety check --full-report || true
+      - name: Run Bandit (code security)
+        run: |
+          pip install bandit
+          bandit -r src/ -ll

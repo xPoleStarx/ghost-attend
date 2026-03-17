@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bot
+    command: poetry run pytest tests/ -v --cov=src --cov-report=xml
+    environment:
+      - ENVIRONMENT=test
+      - DATABASE_URL=postgresql+asyncpg://test:test@postgres:5432/ghostattend_test
+      - REDIS_URL=redis://redis:6379/0
+      - MASTER_ENCRYPTION_KEY=test-key-not-for-production-use-only
+      - TELEGRAM_BOT_TOKEN=fake-token-for-testing
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ghost_test_net
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ghostattend_test
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ghost_test_net
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ghost_test_net
+
+  mock_dys:
+    build:
+      context: ./tests/e2e/fixtures/mock_dys_server
+    ports:
+      - "8888:8888"
+    networks:
+      - ghost_test_net
+
+networks:
+  ghost_test_net:
+    driver: bridge

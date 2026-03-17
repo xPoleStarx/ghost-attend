@@ -1,0 +1,29 @@
+FROM python:3.11-slim-bookworm
+
+# Playwright bağımlılıkları
+RUN apt-get update && apt-get install -y \
+    wget curl gnupg ca-certificates \
+    fonts-liberation libappindicator3-1 libasound2 libatk-bridge2.0-0 \
+    libatk1.0-0 libcups2 libdbus-1-3 libgdk-pixbuf2.0-0 libnspr4 \
+    libnss3 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
+    xdg-utils libxss1 libgbm1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml poetry.lock* ./
+RUN pip install poetry==1.8.3 && \
+    poetry config virtualenvs.create false && \
+    poetry install --no-interaction --without dev
+
+RUN playwright install chromium && playwright install-deps chromium
+
+COPY src/ ./src/
+
+RUN useradd -m -u 1000 ghostuser && \
+    mkdir -p /app/screenshots /app/logs && \
+    chown -R ghostuser:ghostuser /app
+USER ghostuser
+
+# Standalone agent runner
+CMD ["python", "-m", "src.agent.runner"]

@@ -1,0 +1,1 @@
+# GhostAttend Notifications Package
