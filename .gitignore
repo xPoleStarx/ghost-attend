@@ -73,3 +73,6 @@ src/db/migrations/versions/*.pyc
 # Misc
 *.bak
 *.tmp
+
+# Documentation
+architecture.md
