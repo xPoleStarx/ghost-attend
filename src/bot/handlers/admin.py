@@ -52,6 +52,36 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Devam ettirme sırasında hata oluştu.")
 
 
+async def reschedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reschedule — Mevcut job'ları temizleyip yeniden oluştur."""
+    user = update.effective_user
+    log.info("bot.reschedule", user_id=user.id)
+
+    try:
+        removed = await unschedule_all_for_user(user.id)
+        job_ids = await schedule_all_courses_for_user(user.id)
+        jobs = get_user_jobs(user.id)
+
+        lines = [
+            "🔁 Zamanlama yenilendi.",
+            f"Kaldırılan job: {removed}",
+            f"Oluşturulan job: {len(job_ids)}",
+        ]
+        if jobs:
+            lines.append("\n⏱️ Sonraki çalışacaklar:")
+            for j in jobs[:8]:
+                lines.append(f"- {j.get('name')} → {j.get('next_run')}")
+            if len(jobs) > 8:
+                lines.append(f"- … (+{len(jobs) - 8})")
+
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        log.error("bot.reschedule_failed", user_id=user.id, error=str(e), exc_info=True)
+        await update.message.reply_text(
+            "⚠️ Yeniden zamanlama sırasında hata oluştu. Loglara bakıp scheduler/redis bağlantısını kontrol et."
+        )
+
+
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/logs — Son 5 oturum özetini veritabanından çekip göster."""
     user = update.effective_user
@@ -117,6 +147,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "⚙️ **Yönetim**\n"
             "/pause — Otomasyonu duraklat\n"
             "/resume — Otomasyonu devam ettir\n"
+            "/reschedule — Zamanlamayı sıfırdan kur\n"
             "/cancel — Aktif oturumu iptal et\n"
             "/confirmed — MFA Authenticator onayı\n\n"
             "❓ /help — Bu mesaj"
@@ -130,6 +161,7 @@ def get_admin_handlers() -> list[CommandHandler]:
     return [
         CommandHandler("pause", pause_command),
         CommandHandler("resume", resume_command),
+        CommandHandler("reschedule", reschedule_command),
         CommandHandler("logs", logs_command),
         CommandHandler("help", help_command),
     ]

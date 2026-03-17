@@ -16,6 +16,13 @@ celery_app = Celery(
     backend=settings.REDIS_URL,
 )
 
+# Bu app'in process-wide default/current olması kritik.
+# Aksi halde `shared_task` veya farklı import sıralarında Celery default app'i
+# AMQP (RabbitMQ) varsayılanına düşebilir ve `amqp://guest@127.0.0.1:5672`
+# gibi hatalarla publish başarısız olur.
+celery_app.set_default()
+celery_app.set_current()
+
 # Celery ayarları
 celery_app.conf.update(
     # Serialization

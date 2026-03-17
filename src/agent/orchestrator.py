@@ -24,6 +24,8 @@ from src.core.exceptions import (
     AgentMFARequired,
     AgentPageFrozen,
     CookieExpired,
+    CredentialDecryptFailed,
+    CredentialNotFound,
     MeetingNotStarted,
 )
 from src.core.logging import get_logger
@@ -106,15 +108,33 @@ class SessionOrchestrator:
             if not cookies:
                 try:
                     username, password, _ = await self.vault.get_credentials(self.user_id)
+                except CredentialNotFound as e:
+                    log.error("orchestrator.credential_not_found", error=str(e))
+                    if self.notifier:
+                        await self.notifier.send_error(
+                            user_id=self.user_id,
+                            error_code="CREDENTIAL_NOT_FOUND",
+                            details="Kayıtlı giriş bilgisi bulamadım.",
+                        )
+                    return {"status": "error", "error": "credential_not_found"}
+                except CredentialDecryptFailed as e:
+                    log.error("orchestrator.credential_decrypt_failed", error=str(e))
+                    if self.notifier:
+                        await self.notifier.send_error(
+                            user_id=self.user_id,
+                            error_code="CREDENTIAL_ERROR_KEY_MISMATCH",
+                            details="Mevcut veriyi çözerken hata oluştu (muhtemelen anahtar değişti).",
+                        )
+                    return {"status": "error", "error": "credential_decrypt_failed"}
                 except Exception as e:
                     log.error("orchestrator.credential_error", error=str(e))
                     if self.notifier:
                         await self.notifier.send_error(
                             user_id=self.user_id,
                             error_code="CREDENTIAL_ERROR",
-                            details="❌ Giriş bilgilerin bulunamadı. /reauth ile güncelle.",
+                            details="❌ Giriş bilgilerin okunurken beklenmeyen bir hata oluştu.",
                         )
-                    return {"status": "error", "error": "credential_not_found"}
+                    return {"status": "error", "error": "credential_error"}
 
         # DYS stratejisi
         strategy = BaseDYSStrategy.detect_dys(dys_url or "")
@@ -254,8 +274,12 @@ class SessionOrchestrator:
                 if not username and self.vault:
                     try:
                         username, password, _ = await self.vault.get_credentials(self.user_id)
-                    except Exception:
+                    except CredentialNotFound:
                         return {"status": "error", "error": "credential_not_found"}
+                    except CredentialDecryptFailed:
+                        return {"status": "error", "error": "credential_decrypt_failed"}
+                    except Exception:
+                        return {"status": "error", "error": "credential_error"}
                 continue
 
             except (AgentPageFrozen, AgentJoinFailed, MeetingNotStarted) as e:

@@ -103,7 +103,9 @@ class NotificationService:
             "JOIN_FAILED": "❌ Derse katılım başarısız.",
             "PAGE_FROZEN": "🧊 Sayfa dondu, yeniden deneniyor...",
             "COOKIE_EXPIRED": "🍪 Oturum süresi doldu, yeniden giriş yapılacak.",
-            "CREDENTIAL_ERROR": "❌ Giriş bilgilerin bulunamadı. /reauth ile güncelle.",
+            "CREDENTIAL_NOT_FOUND": "❌ Senin için kayıtlı giriş bilgisi bulamadım. /reauth yazarak bilgilerini yeniden kaydedebilirsin.",
+            "CREDENTIAL_ERROR_KEY_MISMATCH": "❌ Daha önce kaydettiğin giriş bilgilerini çözerken hata aldım. Muhtemelen sistemi yeniden kurarken anahtar değişti. /reauth ile bilgilerini yeniden kaydedelim.",
+            "CREDENTIAL_ERROR": "❌ Giriş bilgilerin okunurken beklenmeyen bir hata oluştu. /reauth ile bilgilerini tazelemen iyi olur.",
             "RETRY": details,
             "AGENT_ERROR": f"⚠️ Beklenmeyen hata: {details}",
         }
@@ -125,9 +127,9 @@ class NotificationService:
         return await self.send_message(
             user_id=user_id,
             text=(
-                f"⏰ *{safe_course}* dersi {minutes_before} dakika sonra başlıyor!\n"
+                f"⏰ *{safe_course}* dersi yaklaşık {minutes_before} dakika sonra başlayacak.\n"
                 f"{time_line}"
-                "Agent hazırlanıyor... 🤖"
+                "Ben arkada derse hazırlanıyorum; zamanı gelince senin adına sessizce katılacağım. 🤖"
             ),
         )
 

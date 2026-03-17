@@ -23,6 +23,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     from src.db.connection import get_session
     from src.db.repositories.course import CourseRepository
+    from src.scheduler.lesson_scheduler import get_user_jobs
 
     try:
         async with get_session() as session:
@@ -61,7 +62,23 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"   {online_badge}"
         )
 
-    lines.append(f"\nToplam: {len(courses)} ders zamanlanmış")
+    # Scheduler job'ları (APScheduler Redis jobstore)
+    try:
+        jobs = get_user_jobs(user.id)
+    except Exception as e:
+        log.warning("bot.status_job_list_failed", user_id=user.id, error=str(e))
+        jobs = []
+
+    if jobs:
+        lines.append("\n⏱️ **Zamanlayıcı Job'ları**")
+        for j in jobs:
+            job_name = escape_dynamic_text(str(j.get("name") or ""), parse_mode="Markdown")
+            next_run = escape_dynamic_text(str(j.get("next_run") or "yok"), parse_mode="Markdown")
+            lines.append(f"- {job_name}\n  `next_run`: `{next_run}`")
+    else:
+        lines.append("\n⏱️ **Zamanlayıcı Job'ları**\n- (Bu kullanıcı için job bulunamadı)")
+
+    lines.append(f"\nToplam: {len(courses)} ders (DB) · {len(jobs)} job (scheduler)")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 

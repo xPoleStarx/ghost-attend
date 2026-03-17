@@ -10,7 +10,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
-from celery import shared_task
+from src.scheduler.celery_app import celery_app
 
 from src.core.logging import get_logger
 
@@ -30,7 +30,7 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-@shared_task(
+@celery_app.task(
     name="src.scheduler.tasks.attend_lesson_task",
     bind=True,
     max_retries=0,  # Retry mantığı orchestrator'da
@@ -91,6 +91,13 @@ def attend_lesson_task(
                 user_id=user_id,
                 course_id=uuid.UUID(course_id),
             )
+            log.info(
+                "task.session_created",
+                task_id=self.request.id,
+                agent_session_id=str(agent_session.id),
+                user_id=user_id,
+                course=course_name,
+            )
 
             # Orchestrator
             orchestrator = SessionOrchestrator(
@@ -133,7 +140,7 @@ def attend_lesson_task(
         return {"status": "error", "error": str(e)}
 
 
-@shared_task(name="src.scheduler.tasks.check_cookie_expiry_task")
+@celery_app.task(name="src.scheduler.tasks.check_cookie_expiry_task")
 def check_cookie_expiry_task():
     """
     Günlük cookie expire kontrolü.
@@ -171,7 +178,7 @@ def check_cookie_expiry_task():
     _run_async(_run())
 
 
-@shared_task(name="src.scheduler.tasks.health_check_task")
+@celery_app.task(name="src.scheduler.tasks.health_check_task")
 def health_check_task():
     """
     Periyodik sağlık kontrolü.

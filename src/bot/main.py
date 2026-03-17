@@ -10,6 +10,10 @@ import asyncio
 import redis.asyncio as aioredis
 from telegram.ext import Application, CommandHandler
 
+# Celery app'i import ederek process-wide default/current set edilmesini garanti et.
+# Bu sayede bot process'i içinden publish edilen task'lar Redis broker'a gider.
+import src.scheduler.celery_app  # noqa: F401
+
 from src.bot.handlers.admin import get_admin_handlers
 from src.bot.handlers.credentials import get_reauth_handler
 from src.bot.handlers.mfa import get_mfa_handlers

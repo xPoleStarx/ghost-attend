@@ -20,6 +20,10 @@ from src.core.logging import get_logger
 
 log = get_logger(__name__)
 
+# Celery app'i import ederek scheduler process'inde de default/current set edilmesini garanti et.
+# Bu sayede burada yapılan `attend_lesson_task.delay(...)` publish'i Redis broker'a gider.
+import src.scheduler.celery_app  # noqa: F401
+
 # APScheduler persistence — Redis job store
 _scheduler: AsyncIOScheduler | None = None
 
@@ -171,7 +175,7 @@ async def _trigger_attend_lesson(
                 user_id=user_id,
                 course_name=course_name,
                 start_time=None,
-                minutes_before=5,
+                minutes_before=settings.MEETING_START_OFFSET_MINUTES,
             )
         else:
             log.warning("scheduler.reminder_skipped_missing_bot_token", user_id=user_id)
@@ -183,15 +187,31 @@ async def _trigger_attend_lesson(
             error=str(e),
         )
 
-    attend_lesson_task.delay(
-        user_id=user_id,
-        course_id=course_id,
-        course_name=course_name,
-        dys_url=dys_url,
-        end_time=end_time,
-        direct_url=direct_url,
-        dys_search_hint=dys_search_hint,
-    )
+    try:
+        async_result = attend_lesson_task.delay(
+            user_id=user_id,
+            course_id=course_id,
+            course_name=course_name,
+            dys_url=dys_url,
+            end_time=end_time,
+            direct_url=direct_url,
+            dys_search_hint=dys_search_hint,
+        )
+        log.info(
+            "scheduler.task_enqueued",
+            user_id=user_id,
+            course=course_name,
+            celery_task_id=getattr(async_result, "id", None),
+            queue="agent_queue",
+        )
+    except Exception as e:
+        log.error(
+            "scheduler.task_enqueue_failed",
+            user_id=user_id,
+            course=course_name,
+            error=str(e),
+            exc_info=True,
+        )
 
 
 async def schedule_all_courses_for_user(user_id: int) -> list[str]:
@@ -246,6 +266,8 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
                 end_time=course.end_time.strftime("%H:%M"),
                 dys_url=dys_url or "",
                 direct_url=course.direct_url,
+                dys_search_hint=getattr(course, "dys_search_hint", None),
+                early_minutes=settings.MEETING_START_OFFSET_MINUTES,
             )
             job_ids.append(job_id)
 
