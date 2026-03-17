@@ -2,11 +2,9 @@
 
 > Üniversite canlı derslerine otonom katılım sağlayan Telegram bot + web agent.
 
-[![CI](https://github.com/GhostAttend/ghost-attend/actions/workflows/ci.yml/badge.svg)](https://github.com/GhostAttend/ghost-attend/actions/workflows/ci.yml)
+[![CI](https://github.com/GhostAttend/ghost-attend/actions/workflows/ci.yml/badge.svg)](https://github.com/GhostAttend/ghost-attend/actions)
 
 ## 🎯 Ne Yapar?
-
-**(Demo/Ekran Görüntüsü buraya eklenecek - Örnek: `![GhostAttend Demo](docs/assets/demo.gif)`)**
 
 1. **Ders programını fotoğraftan okur** — Vision LLM (Gemini/GPT-4o/Claude) ile
 2. **Dersten 5dk önce aktifleşir** — APScheduler + Celery ile zamanlar
