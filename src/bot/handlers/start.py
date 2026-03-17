@@ -258,7 +258,7 @@ async def handle_dys_password(update: Update, context: ContextTypes.DEFAULT_TYPE
             "✅ Bilgiler kaydedildi!\n\n"
             "Şimdi ders programını yükle. 📷\n"
             "Birden fazla fotoğraf ve/veya metin gönderebilirsin.\n"
-            "Tamamlanınca *bitti* yaz.",
+            "Tamamlanınca *bitti* yaz."
         ),
         parse_mode="Markdown",
     )
