@@ -17,7 +17,17 @@ def test_detect_intent_join_variants():
     assert _detect_intent("derse gir") == "ask_join_or_status"
     assert _detect_intent("Derse girecek misin") == "ask_join_or_status"
     assert _detect_intent("derse katılacak mısın") == "ask_join_or_status"
-    assert _detect_intent("şimdi derse gir") == "ask_join_or_status"
+    # Zaman vurgulu ifadeler manuel join isteği olarak ele alınır
+    assert _detect_intent("şimdi derse gir") == "manual_join_request"
+
+
+def test_detect_intent_manual_join_request():
+    assert _detect_intent("sürdürülebilirlik dersine şimdi gir") == "manual_join_request"
+    assert _detect_intent("Kariyer Planlama dersine katıl") == "manual_join_request"
+    assert _detect_intent("Kariyer Planlama dersine hemen gir") == "manual_join_request"
+    assert _detect_intent("derse şimdi gir") == "manual_join_request"
+    assert _detect_intent("derse katılım şimdi") == "manual_join_request"
+    assert _detect_intent("hadi derse gir") == "manual_join_request"
 
 
 def test_detect_intent_ambiguous_schedule_change():

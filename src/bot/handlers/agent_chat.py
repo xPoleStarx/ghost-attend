@@ -80,14 +80,28 @@ def _detect_intent(text: str) -> str | None:
     """
     lowered = text.lower()
 
-    # Derse katılma isteği / durum sorgusu (emir veya soru kipinde)
+    # Belirli bir ders için \"hemen şimdi\" manuel katılım isteği
+    # Örnekler: \"sürdürülebilirlik dersine şimdi gir\", \"Kariyer Planlama dersine katıl\",
+    # \"derse şimdi gir\", \"derse hemen gir\", \"derse şimdi katıl\", \"derse katılım şimdi\"
+    manual_join_patterns = [
+        r"\bdersine\s+(şimdi|hemen)\s+gir\b",
+        r"\bdersine\s+katıl\b",
+        r"\bdersine\s+gir\b",
+        r"\bderse\s+(şimdi|hemen)\s+gir\b",
+        r"\bderse\s+şimdi\s+katıl\b",
+        r"\bderse\s+katılım\s+şimdi\b",
+        r"\bhadi\s+derse\s+gir\b",
+    ]
+    if any(re.search(p, lowered) for p in manual_join_patterns):
+        return "manual_join_request"
+
+    # Derse katılma isteği / durum sorgusu (emir veya soru kipinde) ama zaman belirtmeyen
     join_patterns = [
         r"\bderse\s+gir\b",
         r"\bderse\s+girecek\s+misin\b",
         r"\bderse\s+katıl\b",
         r"\bderse\s+katılacak\s+mısın\b",
         r"\bderse\s+girmen\s+gerekiyor\b",
-        r"\bşimdi\s+derse\s+gir\b",
     ]
     if any(re.search(p, lowered) for p in join_patterns):
         return "ask_join_or_status"
@@ -136,6 +150,39 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     from src.scheduler.lesson_scheduler import schedule_all_courses_for_user
     from src.vision.schedule_parser import _extract_json_block
 
+    # Önce bekleyen manuel katılım onay/iptal akışını deterministik olarak ele al
+    pending = context.user_data.get("pending_manual_join")
+    if pending:
+        lowered = text.lower()
+        # Kısa onay/iptal yanıtları: LLM'e gitmeden direkt aksiyon al
+        if any(kw in lowered for kw in ["evet", "tamam", "şimdi gir", "hemen gir"]) and not any(
+            kw in lowered for kw in ["değil", "istemiyorum", "boşver"]
+        ):
+            from src.scheduler.tasks import attend_lesson_task
+
+            attend_lesson_task.delay(
+                user_id=user.id,
+                course_id=pending["course_id"],
+                course_name=pending["course_name"],
+                dys_url=pending["dys_url"],
+                end_time=pending["end_time"],
+                direct_url=pending["direct_url"],
+                dys_search_hint=pending["dys_search_hint"],
+            )
+            context.user_data.pop("pending_manual_join", None)
+            await update.message.reply_text(
+                "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum. "
+                "Birazdan ekran görüntüleriyle ne yaptığımı haber veririm."
+            )
+            return
+
+        if any(kw in lowered for kw in ["boşver", "iptal", "vazgeç"]):
+            context.user_data.pop("pending_manual_join", None)
+            await update.message.reply_text(
+                "Tamam, bu dersi şimdilik elle bırakıyorum. İstersen sonra tekrar söyleyebilirsin."
+            )
+            return
+
     async with get_session() as session:
         cred_repo = CredentialRepository(session)
         dys_url = await cred_repo.get_dys_url_for_user(user.id)
@@ -159,6 +206,16 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ]
 
         intent = _detect_intent(text)
+
+        # Ders listesi yüklendikten sonra, bazı durumlarda intent'i ders adına göre
+        # manuel katılım isteği lehine esnet.
+        if intent == "ask_join_or_status" and courses:
+            lowered_full = text.lower()
+            for c in courses:
+                name_lower = getattr(c, "name", "").lower()
+                if name_lower and name_lower in lowered_full:
+                    intent = "manual_join_request"
+                    break
 
         # ── Intent: Ders saatini belirsiz güncelleme isteği ──
         if intent == "ambiguous_schedule_change":
@@ -210,6 +267,71 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "Bu derse zamanı geldiğinde otomatik gireceğim. İstersen "
                 "\"Kariyer Planlama dersine şimdi katıl\" gibi net bir cümleyle "
                 "hangi derse hemen girmemi istediğini söyleyebilirsin.",
+                parse_mode="Markdown",
+            )
+            return
+
+        # ── Intent: Belirli ders için manuel derse katılma isteği ──
+        if intent == "manual_join_request":
+            # Basit bir şekilde \"dersine\" veya \"derse\" öncesini ders adı sorgusu olarak almayı dene.
+            lowered = text.lower()
+            course_name_query = text
+            m = re.search(r"(.+?)\s+dersine", lowered) or re.search(r"(.+?)\s+derse", lowered)
+            if m:
+                # Orijinal metinden aynı dilim (\"dersine/derse\" kısmını at)
+                end_idx = m.start()  # \"dersine/derse\" başlangıcına kadar
+                course_name_query = text[:end_idx].strip()
+
+            name_q = course_name_query.strip()
+            if not name_q:
+                await update.message.reply_text(
+                    "Hangi ders için hemen derse girmemi istediğini biraz daha açık yazar mısın? "
+                    'Örnek: "Kariyer Planlama dersine şimdi gir"'
+                )
+                return
+
+            matches = await course_repo.find_by_name(
+                user.id, name_q, active_only=True, limit=5
+            )
+            if not matches:
+                await update.message.reply_text(
+                    f"❌ \"{escape_dynamic_text(name_q, parse_mode='Markdown')}\" ile eşleşen ders bulamadım. /courses ile kontrol edebilirsin.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            target = matches[0]
+            inv_days = {v: k for k, v in DAYS_TR.items()}
+            safe_name = escape_dynamic_text(target.name, parse_mode="Markdown")
+            day_name = inv_days.get(target.day_of_week, "?")
+
+            if not dys_url and not target.direct_url:
+                await update.message.reply_text(
+                    "❌ Bu ders için DYS adresi veya direkt canlı ders bağlantısı bulunamadı. "
+                    "Önce /upload_schedule ile programı güncellediğinden emin ol."
+                )
+                return
+
+            from src.scheduler.tasks import attend_lesson_task
+
+            attend_lesson_task.delay(
+                user_id=user.id,
+                course_id=str(target.id),
+                course_name=target.name,
+                dys_url=dys_url or "",
+                end_time=target.end_time.strftime("%H:%M"),
+                direct_url=target.direct_url,
+                dys_search_hint=getattr(target, "dys_search_hint", None),
+            )
+
+            await update.message.reply_text(
+                "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum.\n\n"
+                f"📚 **{safe_name}**\n"
+                f"📅 {day_name} {target.start_time.strftime('%H:%M')}-"
+                f"{target.end_time.strftime('%H:%M')}\n\n"
+                "Birkaç dakika içinde ekran görüntüleri veya bildirimler gelmeye "
+                "başlamazsa, VPS üzerinde worker loglarını kontrol edebilirsin "
+                "(`docker compose -f docker-compose.dev.yml logs -f worker`).",
                 parse_mode="Markdown",
             )
             return
@@ -300,21 +422,21 @@ ELİNDEKİ DURUM:
  - Emin olduğun durumlarda en uygun tool ile isteği gerçekleştir.
  - Emin olmadığın yerde asla tahmin yürütme; kısa ve net bir soru ile kullanıcıdan ek bilgi iste.
 
- ÖRNEK İSTEK → TOOL EŞLEŞMELERİ:
-- "en yakın ders hangisi" → action=tool, tool="get_next_lesson"
-- "bugün hangi derslerim var" → action=tool, tool="get_today_lessons"
-- "şu an derste misin", "derste misin" → action=tool, tool="get_session_status"
+ÖRNEK İSTEK → TOOL EŞLEŞMELERİ:
+- "en yakın ders hangisi" → action="tool", tool="get_next_lesson"
+- "bugün hangi derslerim var" → action="tool", tool="get_today_lessons"
+- "şu an derste misin", "derste misin" → action="tool", tool="get_session_status"
 - "derse girecek misin", "derse girer misin", "derse katılacak mısın" ama açıkça \"şimdi\" demiyorsa
-  → action=tool, tool="get_session_status"
-- "kariyer planlama dersini salı 22:22 yap" → action=tool, tool="update_course_time"
+  → action="tool", tool="get_session_status"
+- "kariyer planlama dersini salı 22:22 yap" → action="tool", tool="update_course_time"
   args: {{"course_name_query": "Kariyer Planlama", "day": "Salı", "start_time": "22:22"}}
-- "yeni ders ekle: Yapay Zeka, Perşembe 10:00-11:30" → action=tool, tool="add_course"
+- "yeni ders ekle: Yapay Zeka, Perşembe 10:00-11:30" → action="tool", tool="add_course"
   args: {{"name": "Yapay Zeka", "day": "Perşembe", "start_time": "10:00", "end_time": "11:30"}}
 - "Kariyer Planlama dersine şimdi katıl", "Kariyer Planlama dersine hemen gir"
-  → action=tool, tool="start_manual_session"
+  → action="tool", tool="start_manual_session"
   args: {{"course_name_query": "Kariyer Planlama"}}
-- "derse katılmayı iptal et" → action=tool, tool="cancel_active_session"
-- "derslerimi listele" → action=tool, tool="list_courses"
+- "derse katılmayı iptal et" → action="tool", tool="cancel_active_session"
+- "derslerimi listele" → action="tool", tool="list_courses"
 
 ÇIKTI FORMATı (SADECE GEÇERLİ JSON):
 ```json
@@ -330,9 +452,12 @@ KURALLAR:
 - Sadece JSON döndür, başka metin veya açıklama ekleme.
 - Ders seçerken course_name_query ile en iyi eşleşeni seç. Birden fazla güçlü aday varsa en olası olanı seç ve message içinde ne yaptığını belirt. Emin değilsen, action="reply" ile kullanıcıdan hangi dersi kastettiğini sor.
 - Ders saatini değiştirme isteğinde ders adı NET değilse (sadece \"ders\", \"dersim\" vb. diyorsa) asla update_course_time tool'unu çağırma; action="reply" ile kullanıcıdan ders adını iste.
-- Kullanıcı \"[ders adı] dersine şimdi katıl\", \"hemen [ders adı] dersine gir\" gibi EMİR kipinde net bir istek yazıyorsa:
+- Kullanıcı \"[ders adı] dersine şimdi katıl\", \"hemen [ders adı] dersine gir\", \"[ders adı] dersine şimdi gir\" gibi EMİR kipinde net bir istek yazıyorsa:
   - action="tool", tool="start_manual_session" kullan.
-  - message alanında, seçilen ders adını ve saatlerini içeren kısa, samimi bir onay/metin üret (örnek: \"Tamam, Kariyer Planlama dersi için hemen derse katılım oturumu başlatıyorum.\").
+  - message alanında, seçilen ders adını ve saatlerini içeren kısa, samimi ama tekrar etmeyen bir onay/metin üret.
+- Kullanıcı yalnızca durum soruyorsa (\"şu an derste misin\", \"derse girecek misin\" gibi, belirli ders adı veya \"şimdi\" vurgusu olmayan cümleler):
+  - action="tool", tool="get_session_status" kullan.
+- Aynı kullanıcı mesajına cevaben mümkün olduğunca daha önce ürettiğin kalıbın aynısını tekrar etme; içerik aynı olsa bile ifade biçimini hafifçe çeşitlendirebilirsin.
 - Saatler her zaman \"HH:MM\" formatında olmalı ve 24 saatlik zaman kullanılmalı.
 """
 
@@ -553,8 +678,6 @@ KURALLAR:
                 return
 
             if tool == "start_manual_session":
-                from src.scheduler.tasks import attend_lesson_task
-
                 name_q = str(args.get("course_name_query", "")).strip()
                 if not name_q:
                     raise ValueError("course_name_query gerekli")
@@ -580,60 +703,32 @@ KURALLAR:
                     )
                     return
 
+                from src.scheduler.tasks import attend_lesson_task
+
+                attend_lesson_task.delay(
+                    user_id=user.id,
+                    course_id=str(target.id),
+                    course_name=target.name,
+                    dys_url=dys_url or "",
+                    end_time=target.end_time.strftime("%H:%M"),
+                    direct_url=target.direct_url,
+                    dys_search_hint=getattr(target, "dys_search_hint", None),
+                )
+
                 safe_name = escape_dynamic_text(target.name, parse_mode="Markdown")
                 day_name = inv_days.get(target.day_of_week, "?")
                 await _safe_delete(processing)
                 await update.message.reply_text(
-                    "Şöyle yapalım:\n\n"
+                    "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum.\n\n"
                     f"📚 **{safe_name}**\n"
                     f"📅 {day_name} {target.start_time.strftime('%H:%M')}-"
                     f"{target.end_time.strftime('%H:%M')}\n\n"
-                    "Bu derse *hemen şimdi* benim girmemi istiyorsan, kısaca "
-                    "\"Evet, şimdi gir\" yazabilirsin. Vazgeçmek istersen de "
-                    "\"Boşver\" demen yeterli.",
+                    "Birkaç dakika içinde ekran görüntüleri veya bildirimler gelmeye "
+                    "başlamazsa, VPS üzerinde worker loglarını kontrol edebilirsin "
+                    "(`docker compose -f docker-compose.dev.yml logs -f worker`).",
                     parse_mode="Markdown",
                 )
-
-                # Kullanıcıdan gelecek onay/red için context'e basit bir bayrak yaz
-                context.user_data["pending_manual_join"] = {
-                    "course_id": str(target.id),
-                    "course_name": target.name,
-                    "end_time": target.end_time.strftime("%H:%M"),
-                    "direct_url": target.direct_url,
-                    "dys_search_hint": getattr(target, "dys_search_hint", None),
-                    "dys_url": dys_url or "",
-                }
-
                 return
-
-            # Manual join için kullanıcıdan gelen \"Evet, şimdi gir\" / \"Boşver\" yanıtlarını yakala
-            pending = context.user_data.get("pending_manual_join")
-            lowered_text = text.lower()
-            if pending and tool in (None, "", "reply"):
-                if "evet" in lowered_text or "tamam" in lowered_text or "gir" in lowered_text:
-                    attend_lesson_task.delay(
-                        user_id=user.id,
-                        course_id=pending["course_id"],
-                        course_name=pending["course_name"],
-                        dys_url=pending["dys_url"],
-                        end_time=pending["end_time"],
-                        direct_url=pending["direct_url"],
-                        dys_search_hint=pending["dys_search_hint"],
-                    )
-                    context.user_data.pop("pending_manual_join", None)
-
-                    await update.message.reply_text(
-                        "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum. "
-                        "Birazdan ekran görüntüleriyle ne yaptığımı haber veririm. 🤖"
-                    )
-                    return
-
-                if "boşver" in lowered_text or "iptal" in lowered_text or "vazgeç" in lowered_text:
-                    context.user_data.pop("pending_manual_join", None)
-                    await update.message.reply_text(
-                        "Tamam, bu dersi şimdilik elle bırakıyorum. İstersen sonra tekrar söyleyebilirsin."
-                    )
-                    return
 
             if tool == "cancel_active_session":
                 from src.core.session_cancel import cancel_user_session
