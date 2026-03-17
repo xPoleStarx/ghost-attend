@@ -11,6 +11,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from src.core.constants import DAYS_TR, REDIS_PREFIX_CANCEL
 from src.core.logging import get_logger
+from src.bot.utils.safe_text import escape_dynamic_text
 
 log = get_logger(__name__)
 
@@ -52,8 +53,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             online_badge = "❓ Belirsiz"
 
+        safe_name = escape_dynamic_text(c.name, parse_mode="Markdown")
         lines.append(
-            f"📚 **{c.name}**\n"
+            f"📚 **{safe_name}**\n"
             f"   📅 {day_names.get(c.day_of_week, '?')} "
             f"{c.start_time.strftime('%H:%M')}–{c.end_time.strftime('%H:%M')}\n"
             f"   {online_badge}"

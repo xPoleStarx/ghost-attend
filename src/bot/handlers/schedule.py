@@ -349,6 +349,8 @@ async def _handle_edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE
         idx = int(data.split("_")[-1])
         if 0 <= idx < len(courses):
             course = courses[idx]
+            safe_course_name = escape_dynamic_text(course["ders_adi"], parse_mode="Markdown")
+            safe_instructor = escape_dynamic_text(course.get("ogretim_uyesi", "Belirtilmemiş") or "Belirtilmemiş", parse_mode="Markdown")
 
             # Online status badge
             if course.get("online_mi") is True:
@@ -369,9 +371,9 @@ async def _handle_edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             await query.edit_message_text(
                 text=(
-                    f"📖 **{course['ders_adi']}**\n\n"
+                    f"📖 **{safe_course_name}**\n\n"
                     f"📅 {course['gun']} {course['baslangic_saati']}–{course['bitis_saati']}\n"
-                    f"👨‍🏫 {course.get('ogretim_uyesi', 'Belirtilmemiş')}\n"
+                    f"👨‍🏫 {safe_instructor}\n"
                     f"🖥️ {course.get('platform', 'unknown').upper()}\n"
                     f"🎯 {online_text}"
                 ),
@@ -384,8 +386,9 @@ async def _handle_edit_course(update: Update, context: ContextTypes.DEFAULT_TYPE
         if 0 <= idx < len(courses):
             deleted = courses.pop(idx)
             context.user_data["parsed_courses"] = courses
+            safe_deleted = escape_dynamic_text(deleted["ders_adi"], parse_mode="Markdown")
             await query.edit_message_text(
-                text=f"🗑️ **{deleted['ders_adi']}** silindi.",
+                text=f"🗑️ **{safe_deleted}** silindi.",
                 parse_mode="Markdown",
             )
             return await _handle_edit(update, context)
@@ -801,8 +804,9 @@ async def courses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             online_badge = "❓"
 
+        safe_name = escape_dynamic_text(c.name, parse_mode="Markdown")
         lines.append(
-            f"{i}. {online_badge} **{c.name}**\n"
+            f"{i}. {online_badge} **{safe_name}**\n"
             f"   {day_names.get(c.day_of_week, 'Bilinmeyen')} "
             f"{c.start_time.strftime('%H:%M')}–{c.end_time.strftime('%H:%M')}"
         )
@@ -837,7 +841,8 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             badge = "🔴"
         else:
             badge = "❓"
-        lines.append(f"⏰ {c.start_time.strftime('%H:%M')} — {badge} **{c.name}**")
+        safe_name = escape_dynamic_text(c.name, parse_mode="Markdown")
+        lines.append(f"⏰ {c.start_time.strftime('%H:%M')} — {badge} **{safe_name}**")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 

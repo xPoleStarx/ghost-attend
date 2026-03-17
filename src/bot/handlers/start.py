@@ -137,7 +137,7 @@ async def handle_dys_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await update.message.reply_text(
         text=(
-            f"✅ Adres kaydedildi: `{url}`\n\n"
+            f"✅ Adres kaydedildi: `{escape_dynamic_text(url, parse_mode='Markdown')}`\n\n"
             "Microsoft hesabın (Teams için) ile DYS giriş bilgilerin "
             "aynı mı, yoksa farklı mı?"
         ),
@@ -525,8 +525,9 @@ async def handle_onboard_chat_online(update: Update, context: ContextTypes.DEFAU
     lines.append("Online ve belirsiz dersler:\n")
     for i, c in enumerate(online_courses):
         status = "🟢 Online" if c.get("online_mi") is True else "❓ Belirsiz"
+        safe_name = escape_dynamic_text(c["ders_adi"], parse_mode="Markdown")
         lines.append(
-            f"  {i+1}. **{c['ders_adi']}** — {c['gun']} {c['baslangic_saati']}–{c['bitis_saati']} [{status}]"
+            f"  {i+1}. **{safe_name}** — {c['gun']} {c['baslangic_saati']}–{c['bitis_saati']} [{status}]"
         )
 
     lines.append("\n💬 Bu dersler hakkında değişiklik yapmak için yazabilirsin.")

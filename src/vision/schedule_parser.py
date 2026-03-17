@@ -132,12 +132,21 @@ async def _parse_with_anthropic(image_bytes: bytes, mime_type: str) -> str:
     return response.content[0].text
 
 
-# Provider fonksiyon haritası
-_PROVIDER_MAP = {
-    "google": _parse_with_google,
-    "openai": _parse_with_openai,
-    "anthropic": _parse_with_anthropic,
-}
+def _get_provider_parse_fn(provider: str):
+    """
+    Provider parse fonksiyonunu runtime'da resolve et.
+
+    Not: Testlerde `unittest.mock.patch` ile bu fonksiyonlar patch'lendiğinde,
+    statik dict yerine runtime resolve kullanmak patch'in etkili olmasını sağlar.
+    """
+    provider = (provider or "").lower()
+    if provider == "google":
+        return _parse_with_google
+    if provider == "openai":
+        return _parse_with_openai
+    if provider == "anthropic":
+        return _parse_with_anthropic
+    return None
 
 
 async def parse_schedule_image(
@@ -161,7 +170,7 @@ async def parse_schedule_image(
     """
     provider = provider or settings.AGENT_LLM_PROVIDER
 
-    parse_fn = _PROVIDER_MAP.get(provider)
+    parse_fn = _get_provider_parse_fn(provider)
     if not parse_fn:
         raise ScheduleParseError(f"Desteklenmeyen LLM provider: {provider}")
 
@@ -298,11 +307,15 @@ async def _parse_multi_with_anthropic(
     return response.content[0].text
 
 
-_MULTI_PROVIDER_MAP = {
-    "google": _parse_multi_with_google,
-    "openai": _parse_multi_with_openai,
-    "anthropic": _parse_multi_with_anthropic,
-}
+def _get_multi_provider_parse_fn(provider: str):
+    provider = (provider or "").lower()
+    if provider == "google":
+        return _parse_multi_with_google
+    if provider == "openai":
+        return _parse_multi_with_openai
+    if provider == "anthropic":
+        return _parse_multi_with_anthropic
+    return None
 
 
 async def parse_schedule_images(
@@ -326,7 +339,7 @@ async def parse_schedule_images(
         return await parse_schedule_image(images[0][0], images[0][1], provider)
 
     provider = provider or settings.AGENT_LLM_PROVIDER
-    parse_fn = _MULTI_PROVIDER_MAP.get(provider)
+    parse_fn = _get_multi_provider_parse_fn(provider)
     if not parse_fn:
         raise ScheduleParseError(f"Desteklenmeyen LLM provider: {provider}")
 

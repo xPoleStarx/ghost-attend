@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from src.core.logging import get_logger
+from src.bot.utils.safe_text import escape_dynamic_text
 from src.scheduler.lesson_scheduler import (
     get_user_jobs,
     schedule_all_courses_for_user,
@@ -89,11 +90,12 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Course name'i relationship'tan veya async loader'dan al
         # (Eager loading varsayıyoruz veya DB query'de JOIN yapmalıydık)
         # Session modelinde course relationship var.
-        course_name = s.course.name if s.course else "Bilinmeyen Ders"
+        course_name = escape_dynamic_text(s.course.name if s.course else "Bilinmeyen Ders", parse_mode="Markdown")
         
         lines.append(f"{emoji} {date_str} — **{course_name}** ({s.status})")
         if s.failure_reason:
-            lines.append(f"   └ ⚠️ _{s.failure_reason[:50]}..._")
+            reason = escape_dynamic_text(s.failure_reason[:50], parse_mode="Markdown")
+            lines.append(f"   └ ⚠️ {reason}...")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
