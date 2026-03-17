@@ -7,8 +7,9 @@ Ders CRUD işlemleri.
 import uuid
 from datetime import time
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
 
 from src.db.models import Course
 
@@ -73,23 +74,55 @@ class CourseRepository:
         """Vision LLM'den parse edilen dersleri topluca kaydet."""
         from src.core.constants import DAYS_TR
 
-        courses = []
-        for pc in parsed_courses:
-            course = Course(
-                user_id=user_id,
-                name=pc["ders_adi"],
-                day_of_week=DAYS_TR.get(pc["gun"], 0),
-                start_time=time.fromisoformat(pc["baslangic_saati"]),
-                end_time=time.fromisoformat(pc["bitis_saati"]),
-                instructor=pc.get("ogretim_uyesi"),
-                platform=pc.get("platform", "unknown"),
-                is_online=pc.get("online_mi"),
-            )
-            self.session.add(course)
-            courses.append(course)
+        rows: list[dict] = []
+        keys: list[tuple] = []
 
+        for pc in parsed_courses:
+            name = pc["ders_adi"]
+            day_of_week = DAYS_TR.get(pc["gun"], 0)
+            start_time = time.fromisoformat(pc["baslangic_saati"])
+            end_time = time.fromisoformat(pc["bitis_saati"])
+
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "name": name,
+                    "day_of_week": day_of_week,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "instructor": pc.get("ogretim_uyesi"),
+                    "platform": pc.get("platform", "unknown"),
+                    "is_online": pc.get("online_mi"),
+                    "is_active": True,
+                }
+            )
+            keys.append((name, day_of_week, start_time, end_time))
+
+        if not rows:
+            return []
+
+        # Aynı ders tekrar kaydolmasın: unique constraint üstünden upsert.
+        stmt = insert(Course).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_course_user_time",
+            set_={
+                "instructor": stmt.excluded.instructor,
+                "platform": stmt.excluded.platform,
+                "is_online": stmt.excluded.is_online,
+                "is_active": True,
+            },
+        )
+        await self.session.execute(stmt)
         await self.session.flush()
-        return courses
+
+        # Geri dönüş (mevcut kod uyumluluğu): ilgili dersleri DB'den çek.
+        result = await self.session.execute(
+            select(Course).where(
+                Course.user_id == user_id,
+                tuple_(Course.name, Course.day_of_week, Course.start_time, Course.end_time).in_(keys),
+            )
+        )
+        return list(result.scalars().all())
 
     async def set_active(self, course_id: uuid.UUID, is_active: bool) -> None:
         """Dersi aktif/pasif yap."""

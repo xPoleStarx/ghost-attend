@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -100,6 +101,14 @@ class Course(Base):
 
     __table_args__ = (
         Index("idx_courses_user_active", "user_id", "is_active"),
+        UniqueConstraint(
+            "user_id",
+            "name",
+            "day_of_week",
+            "start_time",
+            "end_time",
+            name="uq_course_user_time",
+        ),
     )
 
 
