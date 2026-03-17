@@ -52,6 +52,20 @@ class UserRepository:
         user = await self.create(user_id, first_name, username)
         return user, True
 
+    async def create_or_update(
+        self,
+        user_id: int,
+        first_name: str,
+        username: str | None = None,
+    ) -> User:
+        """Kullanıcıyı bul → güncelle, yoksa oluştur."""
+        user = await self.get_by_id(user_id)
+        if user:
+            user.first_name = first_name
+            user.username = username
+            return user
+        return await self.create(user_id, first_name, username)
+
     async def update_onboarding_step(self, user_id: int, step: str) -> None:
         """Onboarding FSM adımını güncelle."""
         await self.session.execute(
@@ -74,3 +88,44 @@ class UserRepository:
             select(User).where(User.is_active.is_(True))
         )
         return list(result.scalars().all())
+
+    async def create_or_update_credentials(
+        self,
+        user_id: int,
+        type: str,
+        email: str,
+        password: str,
+        dys_url: str | None = None,
+    ) -> None:
+        """Kullanıcı için şifreli credential oluştur veya güncelle."""
+        from cryptography.fernet import Fernet
+        from sqlalchemy.dialects.postgresql import insert
+
+        from src.core.config import settings
+        from src.db.models import Credential
+
+        f = Fernet(settings.MASTER_ENCRYPTION_KEY.encode())
+        email_enc = f.encrypt(email.encode())
+        password_enc = f.encrypt(password.encode())
+
+        stmt = (
+            insert(Credential)
+            .values(
+                user_id=user_id,
+                type=type,
+                email_enc=email_enc,
+                password_enc=password_enc,
+                dys_url=dys_url,
+            )
+            .on_conflict_do_update(
+                index_elements=["user_id", "type"],
+                set_={
+                    "email_enc": email_enc,
+                    "password_enc": password_enc,
+                    "dys_url": dys_url,
+                    "last_verified": None,  # Yeni şifre girildiğinde resetle
+                },
+            )
+        )
+        await self.session.execute(stmt)
+

@@ -52,19 +52,50 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/logs — Son oturum özetlerini göster."""
+    """/logs — Son 5 oturum özetini veritabanından çekip göster."""
     user = update.effective_user
     log.info("bot.logs", user_id=user.id)
 
-    # TODO: DB'den son 5 session'ı çek ve göster
-    await update.message.reply_text(
-        text=(
-            "📋 **Son Oturumlar**\n\n"
-            "_(DB entegrasyonu tamamlanınca gösterilecek)_\n\n"
-            "Zamanlanmış dersler için /status yaz."
-        ),
-        parse_mode="Markdown",
-    )
+    from src.db.connection import get_session
+    from src.db.repositories.session import SessionRepository
+
+    try:
+        async with get_session() as session:
+            repo = SessionRepository(session)
+            recent = await repo.get_recent_sessions(user.id, limit=5)
+    except Exception as e:
+        log.error("bot.logs_db_error", user_id=user.id, error=str(e))
+        await update.message.reply_text("⚠️ Geçmiş kayıtlar çekilirken hata oluştu.")
+        return
+
+    if not recent:
+        await update.message.reply_text("📋 Henüz bir oturum kaydı bulunmuyor.")
+        return
+
+    status_emojis = {
+        "completed": "✅",
+        "failed": "❌",
+        "cancelled": "⏹️",
+        "running": "⏳",
+        "joined": "👤",
+        "pending": "📅",
+    }
+
+    lines = ["📋 **Son Oturumlar**\n"]
+    for s in recent:
+        emoji = status_emojis.get(s.status, "❓")
+        date_str = s.created_at.strftime("%d/%m %H:%M")
+        
+        # Course name'i relationship'tan veya async loader'dan al
+        # (Eager loading varsayıyoruz veya DB query'de JOIN yapmalıydık)
+        # Session modelinde course relationship var.
+        course_name = s.course.name if s.course else "Bilinmeyen Ders"
+        
+        lines.append(f"{emoji} {date_str} — **{course_name}** ({s.status})")
+        if s.failure_reason:
+            lines.append(f"   └ ⚠️ _{s.failure_reason[:50]}..._")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

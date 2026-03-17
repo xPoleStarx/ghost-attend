@@ -6,10 +6,10 @@ architecture.md Section 8.2
 """
 
 SCHEDULE_PARSE_PROMPT = """
-Bu görsel bir üniversite ders programıdır.
+Bu görsel(ler) bir üniversite ders programıdır. Birden fazla görsel veya ek metin bilgisi verilmis olabilir.
 
 GÖREVİN:
-Görseldeki TÜM dersleri tespit et. Her ders için aşağıdaki JSON formatını kullan.
+Tüm görsel ve metinlerdeki TÜM dersleri tespit et. Aynı ders birden fazla görselde geçiyorsa tekrar etme.
 
 ÖNEMLI KURALLAR:
 1. Sadece "Online", "Uzaktan", "Teams", "Zoom", "Meet" gibi ifadeler içeren veya
@@ -21,6 +21,7 @@ Görseldeki TÜM dersleri tespit et. Her ders için aşağıdaki JSON formatın�
 5. Saat formatı her zaman "HH:MM" (24 saat).
 6. Güven skoru: Okuyamadığın, bulanık veya kısmi gördüğün alanlar için düşük ver.
 7. Gün adlarını Türkçe yaz: Pazartesi, Salı, Çarşamba, Perşembe, Cuma, Cumartesi, Pazar
+8. online_mi alanını MUTLAKA true, false veya null olarak doldur. Boş bırakma.
 
 ÇIKTI FORMATI (yalnızca geçerli JSON, markdown code block içinde):
 ```json

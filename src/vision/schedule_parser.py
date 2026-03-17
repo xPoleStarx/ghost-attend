@@ -203,6 +203,164 @@ async def parse_schedule_image(
         raise ScheduleParseError(f"Ders programı parse edilemedi: {e}") from e
 
 
+# ── Multi-Image Provider Fonksiyonları ──
+
+async def _parse_multi_with_google(
+    images: list[tuple[bytes, str]], extra_text: str | None
+) -> str:
+    """Google Gemini — birden fazla görsel + opsiyonel metin."""
+    import google.generativeai as genai
+
+    genai.configure(api_key=settings.GOOGLE_API_KEY)
+    model = genai.GenerativeModel(settings.VISION_LLM_MODEL)
+
+    content_parts: list = []
+    for img_bytes, mime in images:
+        content_parts.append({
+            "mime_type": mime,
+            "data": base64.standard_b64encode(img_bytes).decode(),
+        })
+
+    prompt_text = SCHEDULE_PARSE_PROMPT
+    if extra_text:
+        prompt_text += f"\n\nKullanıcının ek bilgisi:\n{extra_text}"
+    content_parts.append(prompt_text)
+
+    response = await model.generate_content_async(
+        content_parts,
+        generation_config=genai.GenerationConfig(
+            temperature=0.1, max_output_tokens=4096,
+        ),
+    )
+    return response.text
+
+
+async def _parse_multi_with_openai(
+    images: list[tuple[bytes, str]], extra_text: str | None
+) -> str:
+    """OpenAI GPT — birden fazla görsel + opsiyonel metin."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+    content_parts = []
+    for img_bytes, mime in images:
+        b64 = base64.standard_b64encode(img_bytes).decode()
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
+        })
+
+    prompt_text = SCHEDULE_PARSE_PROMPT
+    if extra_text:
+        prompt_text += f"\n\nKullanıcının ek bilgisi:\n{extra_text}"
+    content_parts.append({"type": "text", "text": prompt_text})
+
+    response = await client.chat.completions.create(
+        model=settings.VISION_LLM_MODEL,
+        max_tokens=4096,
+        temperature=0.1,
+        messages=[{"role": "user", "content": content_parts}],
+    )
+    return response.choices[0].message.content or ""
+
+
+async def _parse_multi_with_anthropic(
+    images: list[tuple[bytes, str]], extra_text: str | None
+) -> str:
+    """Anthropic Claude — birden fazla görsel + opsiyonel metin."""
+    import anthropic
+
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+    content_parts = []
+    for img_bytes, mime in images:
+        content_parts.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime,
+                "data": base64.standard_b64encode(img_bytes).decode(),
+            },
+        })
+
+    prompt_text = SCHEDULE_PARSE_PROMPT
+    if extra_text:
+        prompt_text += f"\n\nKullanıcının ek bilgisi:\n{extra_text}"
+    content_parts.append({"type": "text", "text": prompt_text})
+
+    response = await client.messages.create(
+        model=settings.VISION_LLM_MODEL,
+        max_tokens=4096,
+        messages=[{"role": "user", "content": content_parts}],
+    )
+    return response.content[0].text
+
+
+_MULTI_PROVIDER_MAP = {
+    "google": _parse_multi_with_google,
+    "openai": _parse_multi_with_openai,
+    "anthropic": _parse_multi_with_anthropic,
+}
+
+
+async def parse_schedule_images(
+    images: list[tuple[bytes, str]],
+    extra_text: str | None = None,
+    provider: str | None = None,
+) -> ScheduleParseResult:
+    """
+    Birden fazla ders programı görselini ve/veya ek metni Vision LLM ile parse et.
+
+    Args:
+        images: (image_bytes, mime_type) listesi
+        extra_text: Kullanıcının ek metin girdisi
+        provider: LLM sağlayıcı. None ise config'den alınır.
+
+    Returns:
+        ScheduleParseResult
+    """
+    # Tek görsel → orijinal fonksiyonu kullan
+    if len(images) == 1 and not extra_text:
+        return await parse_schedule_image(images[0][0], images[0][1], provider)
+
+    provider = provider or settings.AGENT_LLM_PROVIDER
+    parse_fn = _MULTI_PROVIDER_MAP.get(provider)
+    if not parse_fn:
+        raise ScheduleParseError(f"Desteklenmeyen LLM provider: {provider}")
+
+    log.info(
+        "vision.multi_parse_start",
+        provider=provider,
+        image_count=len(images),
+        has_text=bool(extra_text),
+    )
+
+    try:
+        raw_response = await parse_fn(images, extra_text)
+        log.info("vision.multi_llm_response", response_length=len(raw_response))
+
+        json_str = _extract_json_block(raw_response)
+        data = json.loads(json_str)
+
+        result = ScheduleParseResult(
+            courses=[ParsedCourse(**c) for c in data.get("courses", [])],
+            raw_text=data.get("raw_text", ""),
+            parse_warnings=data.get("parse_warnings", []),
+        )
+
+        log.info(
+            "vision.multi_parse_complete",
+            course_count=len(result.courses),
+        )
+        return result
+
+    except json.JSONDecodeError as e:
+        raise ScheduleParseError(f"JSON parse hatası: {e}") from e
+    except Exception as e:
+        raise ScheduleParseError(f"Ders programı parse edilemedi: {e}") from e
+
+
 def format_courses_for_telegram(result: ScheduleParseResult) -> str:
     """
     Parse sonuçlarını Telegram mesajı formatına çevir.
@@ -235,8 +393,12 @@ def format_courses_for_telegram(result: ScheduleParseResult) -> str:
             f"   🖥️ {platform_text}"
         )
 
-        if course.online_mi is None:
-            lines.append(f"   ⚠️ _Online/yüz yüze belirsiz_")
+        if course.online_mi is True:
+            lines.append(f"   🟢 **Online**")
+        elif course.online_mi is False:
+            lines.append(f"   🔴 **Yüz yüze**")
+        else:
+            lines.append(f"   ❓ _Online/yüz yüze belirsiz_")
 
         lines.append("")  # Boş satır
 

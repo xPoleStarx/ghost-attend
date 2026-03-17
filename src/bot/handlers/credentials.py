@@ -80,15 +80,30 @@ async def handle_reauth_password(update: Update, context: ContextTypes.DEFAULT_T
         except Exception:
             pass
 
-    context.user_data["dys_password"] = password
-
-    # TODO: DB'ye kaydet ve DYS login doğrula
+    # DB'ye kaydet
+    from src.db.connection import get_session
+    from src.db.repositories.user import UserRepository
+    
+    try:
+        async with get_session() as session:
+            user_repo = UserRepository(session)
+            await user_repo.create_or_update_credentials(
+                user_id=user_id,
+                type="unified", # Varsayılan
+                email=context.user_data["dys_email"],
+                password=password,
+                dys_url=context.user_data.get("dys_url")
+            )
+            await session.commit()
+    except Exception as e:
+        log.error("bot.reauth_db_failed", user_id=user_id, error=str(e))
+        await update.effective_chat.send_message("❌ Veritabanı hatası oluştu.")
+        return ConversationHandler.END
 
     await update.effective_chat.send_message(
         text=(
-            "✅ Kimlik bilgileri güncellendi!\n\n"
-            "Doğrulama yapılıyor... ⏳\n"
-            "_(DYS login doğrulaması Sprint 3'te aktifleşecek)_"
+            "✅ Kimlik bilgileri başarıyla güncellendi ve şifrelendi!\n\n"
+            "Artık yeni bilgilerle derslere katılabilirim."
         ),
         parse_mode="Markdown",
     )

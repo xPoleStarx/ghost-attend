@@ -1,33 +1,37 @@
 """
-GhostAttend — Session Handler (Scheduler Entegre)
+GhostAttend — Session Handler (DB-Based)
 
 Aktif oturum yönetimi: /status, /cancel komutları.
-Scheduler ve Redis bilgisiyle birlikte çalışır.
+DB'den ders bilgisini çeker, scheduler bağımsız çalışır.
 """
 
 import redis.asyncio as aioredis
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
-from src.core.constants import REDIS_PREFIX_CANCEL
+from src.core.constants import DAYS_TR, REDIS_PREFIX_CANCEL
 from src.core.logging import get_logger
-from src.scheduler.lesson_scheduler import get_user_jobs
 
 log = get_logger(__name__)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/status — Aktif oturumu ve zamanlanmış dersleri göster."""
+    """/status — Aktif oturumu ve zamanlanmış dersleri göster (DB-based)."""
     user = update.effective_user
     log.info("bot.status", user_id=user.id)
 
-    # Zamanlanmış job'ları kontrol et
-    try:
-        jobs = get_user_jobs(user.id)
-    except Exception:
-        jobs = []
+    from src.db.connection import get_session
+    from src.db.repositories.course import CourseRepository
 
-    if not jobs:
+    try:
+        async with get_session() as session:
+            repo = CourseRepository(session)
+            courses = await repo.get_user_courses(user.id, active_only=True)
+    except Exception as e:
+        log.error("bot.status_db_error", user_id=user.id, error=str(e))
+        courses = []
+
+    if not courses:
         await update.message.reply_text(
             "📊 **Oturum Durumu**\n\n"
             "Zamanlanmış ders yok.\n"
@@ -36,13 +40,26 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    # day_of_week (int) → Türkçe gün adı
+    day_names = {v: k for k, v in DAYS_TR.items()}
+
     lines = ["📊 **Zamanlanmış Dersler**\n"]
-    for job in jobs:
-        next_run = job.get("next_run", "Bilinmiyor")
-        lines.append(f"📚 {job['name']}\n   ⏰ Sonraki: {next_run}")
+    for c in courses:
+        if c.is_online is True:
+            online_badge = "🟢 Online"
+        elif c.is_online is False:
+            online_badge = "🔴 Yüz yüze"
+        else:
+            online_badge = "❓ Belirsiz"
 
-    lines.append(f"\nToplam: {len(jobs)} ders zamanlanmış")
+        lines.append(
+            f"📚 **{c.name}**\n"
+            f"   📅 {day_names.get(c.day_of_week, '?')} "
+            f"{c.start_time.strftime('%H:%M')}–{c.end_time.strftime('%H:%M')}\n"
+            f"   {online_badge}"
+        )
 
+    lines.append(f"\nToplam: {len(courses)} ders zamanlanmış")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -69,4 +86,5 @@ def get_session_handlers() -> list[CommandHandler]:
     """Session ile ilgili handler'ları döndür."""
     return [
         CommandHandler("status", status_command),
+        CommandHandler("cancel", cancel_session_command),
     ]

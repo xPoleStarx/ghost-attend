@@ -22,6 +22,7 @@ class OnboardingState(IntEnum):
     ASK_SCHEDULE_PHOTO = 9
     CONFIRM_COURSES = 10
     SETUP_COMPLETE = 11
+    CHAT_ONLINE_COURSES = 12  # LLM chatbot ile online ders düzenleme
 
 
 class SessionState(IntEnum):

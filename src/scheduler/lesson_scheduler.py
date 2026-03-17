@@ -179,6 +179,9 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
     from src.db.connection import get_session
     from src.db.repositories.course import CourseRepository
 
+    # day_of_week (int) → Türkçe gün adı
+    day_int_to_name = {v: k for k, v in DAYS_TR.items()}
+
     job_ids = []
 
     async with get_session() as session:
@@ -186,13 +189,19 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
         courses = await course_repo.get_user_courses(user_id, active_only=True)
 
         for course in courses:
+            # is_online=False → yüz yüze, zamanlamaya gerek yok
+            if course.is_online is False:
+                continue
+
+            day_name = day_int_to_name.get(course.day_of_week, "Pazartesi")
+
             job_id = await schedule_course(
                 user_id=user_id,
                 course_id=str(course.id),
                 course_name=course.name,
-                day=course.day,
-                start_time=course.start_time,
-                end_time=course.end_time,
+                day=day_name,
+                start_time=course.start_time.strftime("%H:%M"),
+                end_time=course.end_time.strftime("%H:%M"),
                 dys_url=course.dys_url or "",
                 direct_url=course.direct_url,
             )

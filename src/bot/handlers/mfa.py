@@ -96,11 +96,17 @@ async def handle_mfa_timeout_response(update: Update, context: ContextTypes.DEFA
     user_id = update.effective_user.id
     log.info("mfa.retry_requested", user_id=user_id)
 
-    # TODO: Oturumu yeniden başlat
-    await update.message.reply_text(
-        "🔄 Oturum yeniden başlatılıyor...\n"
-        "_(Scheduler entegrasyonu Sprint 5'te aktifleşecek)_"
-    )
+    from src.scheduler.lesson_scheduler import schedule_all_courses_for_user
+
+    try:
+        job_ids = await schedule_all_courses_for_user(user_id)
+        await update.message.reply_text(
+            f"🔄 Oturum yeniden başlatılıyor...\n"
+            f"{len(job_ids)} ders kontrol ediliyor."
+        )
+    except Exception as e:
+        log.error("mfa.retry_failed", user_id=user_id, error=str(e))
+        await update.message.reply_text("⚠️ Yeniden başlatma sırasında hata oluştu.")
 
 
 def get_mfa_handlers() -> list:

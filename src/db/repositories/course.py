@@ -83,6 +83,7 @@ class CourseRepository:
                 end_time=time.fromisoformat(pc["bitis_saati"]),
                 instructor=pc.get("ogretim_uyesi"),
                 platform=pc.get("platform", "unknown"),
+                is_online=pc.get("online_mi"),
             )
             self.session.add(course)
             courses.append(course)

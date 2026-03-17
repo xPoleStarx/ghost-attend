@@ -34,11 +34,10 @@ async_session_factory = async_sessionmaker(
 
 @asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency veya genel kullanım için async session üreteci."""
+    """Async session üreteci. Caller commit/rollback yönetimini kendisi yapar."""
     async with async_session_factory() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise

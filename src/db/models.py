@@ -90,6 +90,7 @@ class Course(Base):
     direct_url: Mapped[str | None] = mapped_column(Text)
     dys_search_hint: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_online: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     semester: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
