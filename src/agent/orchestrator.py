@@ -7,6 +7,7 @@ Bir ders oturumunun tüm lifecycle'ını yönetir:
 """
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
@@ -47,6 +48,12 @@ class SessionOrchestrator:
     ):
         self.user_id = user_id
         self.session_id = session_id
+        try:
+            self.session_uuid: uuid.UUID | None = uuid.UUID(session_id)
+        except Exception:
+            # Testlerde veya legacy çağrılarda UUID olmayan session_id gelebilir.
+            # DB güncellemeleri sadece UUID varsa yapılır.
+            self.session_uuid = None
         self.redis = redis_client
         self.notifier = notifier
         self.vault = vault
@@ -77,6 +84,13 @@ class SessionOrchestrator:
             user_id=self.user_id,
             course=course_name,
         )
+
+        # DB: session running
+        if self.session_repo and self.session_uuid:
+            try:
+                await self.session_repo.update_status(self.session_uuid, "running")
+            except Exception as e:
+                log.warning("orchestrator.session_status_update_failed", error=str(e))
 
         # Credential'ları çöz
         username, password = None, None
@@ -118,7 +132,21 @@ class SessionOrchestrator:
         # Ana döngü — senaryo-driven
         while True:
             try:
-                result = await runner.run(
+                # Testlerde AgentRunner patch edildiğinde AsyncMock üstünde run_with_retry "varmış gibi"
+                # görünebilir; bu durumda gerçek implementasyonu seçmek için type(...) kontrolü yap.
+                if callable(getattr(type(runner), "run_with_retry", None)):
+                    result = await runner.run_with_retry(
+                        course_name=course_name,
+                        dys_url=dys_url,
+                        username=username,
+                        password=password,
+                        end_time=end_time,
+                        direct_url=direct_url,
+                        dys_search_hint=dys_search_hint,
+                        cookies=cookies,
+                    )
+                else:
+                    result = await runner.run(
                     course_name=course_name,
                     dys_url=dys_url,
                     username=username,
@@ -136,6 +164,14 @@ class SessionOrchestrator:
                 )
 
                 log.info("orchestrator.completed", session_id=self.session_id)
+                if self.session_repo and self.session_uuid:
+                    try:
+                        if result.get("status") == "cancelled":
+                            await self.session_repo.update_status(self.session_uuid, "cancelled")
+                        else:
+                            await self.session_repo.update_status(self.session_uuid, "completed")
+                    except Exception as e:
+                        log.warning("orchestrator.session_status_update_failed", error=str(e))
                 return result
 
             except AgentMFARequired as e:
@@ -161,12 +197,55 @@ class SessionOrchestrator:
 
                 if not code:
                     log.warning("orchestrator.mfa_timeout", session_id=self.session_id)
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            await self.session_repo.update_status(
+                                self.session_uuid, "failed", failure_reason="mfa_timeout"
+                            )
+                        except Exception as e:
+                            log.warning("orchestrator.session_status_update_failed", error=str(e))
                     return {"status": "mfa_timeout"}
 
-                # TODO: Kodu agent'a ilet ve devam et
-                # Şu an için oturumu yeniden başlat
+                # MFA kodunu yeni task'a enjekte ederek yeniden dene
+                # Not: Bu akış browser-use sürümüne göre "devam etme" yerine "yeniden dene" şeklinde çalışır.
                 log.info("orchestrator.mfa_code_received", session_id=self.session_id)
-                continue
+                try:
+                    if callable(getattr(type(runner), "run_with_retry", None)):
+                        result = await runner.run_with_retry(
+                            course_name=course_name,
+                            dys_url=dys_url,
+                            username=username,
+                            password=password,
+                            end_time=end_time,
+                            direct_url=direct_url,
+                            dys_search_hint=dys_search_hint,
+                            cookies=cookies,
+                            mfa_code=code,
+                        )
+                    else:
+                        result = await runner.run(
+                        course_name=course_name,
+                        dys_url=dys_url,
+                        username=username,
+                        password=password,
+                        end_time=end_time,
+                        direct_url=direct_url,
+                        dys_search_hint=dys_search_hint,
+                        cookies=cookies,
+                        mfa_code=code,
+                    )
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            if result.get("status") == "cancelled":
+                                await self.session_repo.update_status(self.session_uuid, "cancelled")
+                            else:
+                                await self.session_repo.update_status(self.session_uuid, "completed")
+                        except Exception as e:
+                            log.warning("orchestrator.session_status_update_failed", error=str(e))
+                    return result
+                except Exception:
+                    # normal akıştaki retry/handling devam etsin
+                    continue
 
             except CookieExpired:
                 # Cookie expire → credential ile tekrar dene
@@ -192,6 +271,13 @@ class SessionOrchestrator:
                         session_id=self.session_id,
                         scenario=scenario.value,
                     )
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            await self.session_repo.update_status(
+                                self.session_uuid, "failed", failure_reason="max_retry_exceeded"
+                            )
+                        except Exception as e:
+                            log.warning("orchestrator.session_status_update_failed", error=str(e))
                     return {"status": "max_retry_exceeded", "scenario": scenario.value}
 
                 config = self.scenario_handler.get_recovery(scenario)
@@ -205,6 +291,13 @@ class SessionOrchestrator:
                 await self.scenario_handler.execute_recovery(
                     scenario, self.user_id, course_name
                 )
+                if self.session_repo and self.session_uuid:
+                    try:
+                        await self.session_repo.update_status(
+                            self.session_uuid, "failed", failure_reason=scenario.value
+                        )
+                    except Exception as e:
+                        log.warning("orchestrator.session_status_update_failed", error=str(e))
                 return {"status": "fatal_error", "scenario": scenario.value}
 
             except Exception as e:
@@ -221,6 +314,13 @@ class SessionOrchestrator:
                 )
 
                 if action == RecoveryAction.ABORT:
+                    if self.session_repo and self.session_uuid:
+                        try:
+                            await self.session_repo.update_status(
+                                self.session_uuid, "failed", failure_reason=str(e)[:200]
+                            )
+                        except Exception as ex:
+                            log.warning("orchestrator.session_status_update_failed", error=str(ex))
                     return {"status": "error", "error": str(e)}
 
                 await asyncio.sleep(10)

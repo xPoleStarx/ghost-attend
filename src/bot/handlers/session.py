@@ -66,22 +66,36 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/cancel — Aktif oturumu durdur (Redis'e cancel flag yaz)."""
+    """/cancel — Aktif oturumu durdur (gerçek temizlik + cancel flag)."""
     user = update.effective_user
     log.info("bot.cancel_session", user_id=user.id)
 
     redis_client: aioredis.Redis | None = context.bot_data.get("redis")
 
-    if redis_client:
-        cancel_key = f"{REDIS_PREFIX_CANCEL}{user.id}"
-        await redis_client.set(cancel_key, "1", ex=600)  # 10dk TTL
+    from src.core.session_cancel import cancel_user_session
+    from src.db.connection import get_session
 
+    async with get_session() as session:
+        result = await cancel_user_session(
+            user_id=user.id,
+            redis_client=redis_client,
+            db_session=session,
+        )
+        await session.commit()
+
+    # PTB tarafı: conversation state'lerini de temizle
+    context.user_data.clear()
+
+    if result["cancel_flag_set"] or result["db_cancelled"] or result["redis_deleted"] > 0:
         await update.message.reply_text(
-            "⏹️ Aktif oturum iptal ediliyor...\n"
-            "Agent en kısa sürede duracak."
+            "⏹️ İptal alındı. Aktif oturum durduruluyor ve geçici veriler temizleniyor.\n"
+            "Tekrar başlamak için /start yazabilirsin."
         )
     else:
-        await update.message.reply_text("⏹️ Şu anda aktif bir oturum yok.")
+        await update.message.reply_text(
+            "⏹️ İptal alındı. Şu anda aktif bir oturum görünmüyor; yine de geçici verileri temizledim.\n"
+            "Tekrar başlamak için /start yazabilirsin."
+        )
 
 
 def get_session_handlers() -> list[CommandHandler]:

@@ -36,6 +36,49 @@ class CourseRepository:
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    async def find_by_name(
+        self,
+        user_id: int,
+        name_query: str,
+        active_only: bool = True,
+        limit: int = 5,
+    ) -> list[Course]:
+        """İsme göre ders ara (case-insensitive, contains)."""
+        q = select(Course).where(Course.user_id == user_id)
+        if active_only:
+            q = q.where(Course.is_active.is_(True))
+
+        # ILIKE (Postgres) uyumlu: SQLAlchemy'de .ilike()
+        q = q.where(Course.name.ilike(f"%{name_query}%")).order_by(Course.day_of_week, Course.start_time).limit(limit)
+        result = await self.session.execute(q)
+        return list(result.scalars().all())
+
+    async def update_schedule(
+        self,
+        course_id: uuid.UUID,
+        *,
+        day_of_week: int | None = None,
+        start_time: time | None = None,
+        end_time: time | None = None,
+    ) -> None:
+        """Dersin gün/saat bilgisini güncelle."""
+        values: dict = {}
+        if day_of_week is not None:
+            values["day_of_week"] = day_of_week
+        if start_time is not None:
+            values["start_time"] = start_time
+        if end_time is not None:
+            values["end_time"] = end_time
+
+        if not values:
+            return
+
+        await self.session.execute(
+            update(Course)
+            .where(Course.id == course_id)
+            .values(**values)
+        )
+
     async def create(
         self,
         user_id: int,

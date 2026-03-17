@@ -40,6 +40,7 @@ def _run_async(coro):
 def attend_lesson_task(
     self,
     user_id: int,
+    course_id: str,
     course_name: str,
     dys_url: str,
     end_time: str,
@@ -66,6 +67,7 @@ def attend_lesson_task(
         from src.agent.orchestrator import SessionOrchestrator
         from src.core.config import settings
         from src.db.connection import get_session
+        from src.db.repositories.session import SessionRepository
         from src.notifications.service import NotificationService
         from src.security.encryption import CredentialVault
         from src.security.vault import VaultService
@@ -83,13 +85,21 @@ def attend_lesson_task(
                 bot_token=settings.TELEGRAM_BOT_TOKEN,
             )
 
+            # DB session kaydı oluştur (tek source of truth)
+            session_repo = SessionRepository(db_session)
+            agent_session = await session_repo.create(
+                user_id=user_id,
+                course_id=uuid.UUID(course_id),
+            )
+
             # Orchestrator
             orchestrator = SessionOrchestrator(
                 user_id=user_id,
-                session_id=session_id,
+                session_id=str(agent_session.id),
                 redis_client=redis_client,
                 notifier=notifier,
                 vault=vault_service,
+                session_repo=session_repo,
             )
 
             # Çalıştır

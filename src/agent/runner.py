@@ -7,6 +7,7 @@ architecture.md Section 9.2
 """
 
 import asyncio
+import time
 from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
@@ -22,6 +23,7 @@ from src.core.config import settings
 from src.core.constants import (
     AGENT_MAX_RETRY,
     AGENT_TIMEOUT_SECONDS,
+    CHECKPOINT_JOINED,
     ERROR_DYS_LOGIN_FAILED,
     ERROR_JOIN_FAILED,
     ERROR_LINK_NOT_FOUND,
@@ -32,6 +34,7 @@ from src.core.constants import (
     RETRY_DELAY_SECONDS,
 )
 from src.core.exceptions import (
+    AgentCancelled,
     AgentJoinFailed,
     AgentLoginFailed,
     AgentLinkNotFound,
@@ -110,6 +113,7 @@ class AgentRunner:
         direct_url: str | None = None,
         dys_search_hint: str | None = None,
         cookies: list[dict] | None = None,
+        mfa_code: str | None = None,
     ) -> dict:
         """
         Agent'ı çalıştır.
@@ -140,10 +144,10 @@ class AgentRunner:
 
         # Task string oluştur
         if direct_url:
-            task = build_direct_url_task(course_name, direct_url, end_time)
+            task = build_direct_url_task(course_name, direct_url, end_time, mfa_code=mfa_code)
         elif cookies:
             task = build_cookie_login_task(
-                course_name, dys_url or "", end_time, dys_search_hint
+                course_name, dys_url or "", end_time, dys_search_hint, mfa_code=mfa_code
             )
         else:
             task = build_dys_to_meeting_task(
@@ -153,6 +157,7 @@ class AgentRunner:
                 password or "",
                 end_time,
                 dys_search_hint,
+                mfa_code=mfa_code,
             )
 
         # Checkpoint handler
@@ -162,6 +167,10 @@ class AgentRunner:
             notifier=self.notifier,
             session_repo=self.session_repo,
         )
+
+        # Canlı rapor: derse girildikten sonra periyodik screenshot
+        last_live_report_at = 0.0
+        live_report_interval_s = 180  # varsayılan: 3 dakika
 
         # MFA handler
         mfa_handler = None
@@ -176,10 +185,42 @@ class AgentRunner:
         llm = self._create_llm()
 
         # browser-use Agent oluştur
-        agent = Agent(
-            task=task,
-            llm=llm,
-        )
+        async def _on_step(step_info: dict) -> None:
+            # Kullanıcı iptali varsa hızlı çık
+            if self.redis:
+                cancel_key = f"{REDIS_PREFIX_CANCEL}{self.user_id}"
+                if await self.redis.get(cancel_key):
+                    raise AgentCancelled("Kullanıcı iptal etti")
+            await checkpoint_handler.handle_step(step_info)
+
+            nonlocal last_live_report_at
+            now = time.monotonic()
+            if (
+                CHECKPOINT_JOINED in checkpoint_handler.detected_checkpoints
+                and (now - last_live_report_at) >= live_report_interval_s
+            ):
+                screenshot_bytes = step_info.get("screenshot")
+                if screenshot_bytes:
+                    try:
+                        await checkpoint_handler.send_manual_screenshot(
+                            screenshot_bytes=screenshot_bytes,
+                            caption="📍 Şu an dersteyim. Kısa durum raporu.",
+                        )
+                        last_live_report_at = now
+                    except Exception:
+                        # Canlı rapor başarısız olsa da agent devam etmeli
+                        pass
+
+        try:
+            agent = Agent(
+                task=task,
+                llm=llm,
+                on_step=_on_step,
+            )
+        except TypeError:
+            # browser-use sürümü callback desteklemiyor olabilir
+            log.warning("agent.on_step_not_supported", session_id=self.session_id)
+            agent = Agent(task=task, llm=llm)
 
         try:
             # Timeout ile çalıştır
@@ -195,6 +236,8 @@ class AgentRunner:
 
         except asyncio.TimeoutError:
             raise AgentPageFrozen(f"Agent {timeout}sn içinde tamamlanamadı")
+        except AgentCancelled:
+            return {"status": "cancelled"}
 
     def _parse_result(self, raw_result) -> dict:
         """Agent sonucunu parse et ve hata kodlarını exception'a çevir."""
@@ -260,6 +303,9 @@ class AgentRunner:
             except AgentMFARequired:
                 # MFA retry'lanmaz, kullanıcı müdahalesi gerekir
                 raise
+            except AgentCancelled:
+                log.info("agent.cancelled_by_user", session_id=self.session_id)
+                return {"status": "cancelled"}
 
             except (AgentLoginFailed, AgentLinkNotFound) as e:
                 # Bu hatalar retry'lansa da muhtemelen aynı sonucu verir

@@ -117,6 +117,7 @@ async def schedule_course(
         name=f"{course_name} ({day} {start_time})",
         kwargs={
             "user_id": user_id,
+            "course_id": course_id,
             "course_name": course_name,
             "dys_url": dys_url,
             "end_time": end_time,
@@ -140,6 +141,7 @@ async def schedule_course(
 
 async def _trigger_attend_lesson(
     user_id: int,
+    course_id: str,
     course_name: str,
     dys_url: str,
     end_time: str,
@@ -183,6 +185,7 @@ async def _trigger_attend_lesson(
 
     attend_lesson_task.delay(
         user_id=user_id,
+        course_id=course_id,
         course_name=course_name,
         dys_url=dys_url,
         end_time=end_time,

@@ -18,11 +18,18 @@ def build_direct_url_task(
     course_name: str,
     direct_url: str,
     end_time: str,
+    mfa_code: str | None = None,
 ) -> str:
     """
     Direkt Teams/Zoom linki ile derse katılım görevi oluştur.
     DYS'yi atlar, doğrudan toplantı linkine gider.
     """
+    mfa_hint = (
+        f"\nMFA_NOTU: Eğer MFA ekranı gelirse bu kodu kullan: MFA_CODE='{mfa_code}'.\n"
+        if mfa_code
+        else ""
+    )
+
     return f"""
 GÖREV: {course_name} dersine katıl.
 
@@ -40,6 +47,7 @@ ADIM 6: {end_time} olduğunda CHECKPOINT → '{CHECKPOINT_COMPLETED}' olarak iş
 
 HATA DURUMU: Giriş başarısız olursa HATA_KODU: JOIN_FAILED döndür.
 MFA DURUMU: SMS/authenticator kodu istenirse HATA_KODU: MFA_REQUIRED döndür.
+{mfa_hint}
 
 KRİTİK KURALLAR:
 - Asla mikrofonu veya kamerayı açma.
@@ -55,6 +63,7 @@ def build_dys_to_meeting_task(
     password: str,
     end_time: str,
     dys_search_hint: str | None = None,
+    mfa_code: str | None = None,
 ) -> str:
     """
     DYS üzerinden ders linki bulma ve toplantıya katılım görevi oluştur.
@@ -63,6 +72,12 @@ def build_dys_to_meeting_task(
     search_context = (
         f"Ders adı '{dys_search_hint or course_name}' ile ara."
         if dys_search_hint
+        else ""
+    )
+
+    mfa_hint = (
+        f"\nMFA_NOTU: Eğer MFA/2FA kodu istenirse bu kodu kullan: MFA_CODE='{mfa_code}'.\n"
+        if mfa_code
         else ""
     )
 
@@ -105,6 +120,7 @@ ADIM 13: {end_time}'da CHECKPOINT → '{CHECKPOINT_COMPLETED}' olarak işaretle.
 KRİTİK KURALLAR:
 - Asla mikrofonu veya kamerayı açma.
 - MFA/2FA kodu istenirse hemen dur: HATA_KODU: MFA_REQUIRED
+{mfa_hint}
 - Sayfa donarsa: bir kez yenile. İki kez donarsa: HATA_KODU: PAGE_FROZEN
 - Teams'te "toplantıdan ayrıl" butonuna ASLA tıklama.
 - "Oturumu kapat" / "Logout" butonlarına ASLA tıklama.
@@ -116,6 +132,7 @@ def build_cookie_login_task(
     dys_url: str,
     end_time: str,
     dys_search_hint: str | None = None,
+    mfa_code: str | None = None,
 ) -> str:
     """
     Kayıtlı cookie'ler ile DYS'ye giriş (şifre gerektirmez).
@@ -124,6 +141,12 @@ def build_cookie_login_task(
     search_context = (
         f"Ders adı '{dys_search_hint or course_name}' ile ara."
         if dys_search_hint
+        else ""
+    )
+
+    mfa_hint = (
+        f"\nMFA_NOTU: Eğer MFA/2FA kodu istenirse bu kodu kullan: MFA_CODE='{mfa_code}'.\n"
+        if mfa_code
         else ""
     )
 
@@ -144,4 +167,5 @@ ADIM 8: Saat {end_time}'a kadar bekle, her 60sn mouse hareketi yap.
 ADIM 9: {end_time}'da CHECKPOINT → '{CHECKPOINT_COMPLETED}'.
 
 KRİTİK: Kamera/mikrofon AÇMA. MFA istenirse HATA_KODU: MFA_REQUIRED.
+{mfa_hint}
 """

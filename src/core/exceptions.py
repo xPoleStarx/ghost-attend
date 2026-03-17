@@ -46,6 +46,11 @@ class AgentPageFrozen(AgentError):
     pass
 
 
+class AgentCancelled(AgentError):
+    """Kullanıcı /cancel ile agent'ı durdurdu."""
+    pass
+
+
 class AgentMaxRetryExceeded(AgentError):
     """Maksimum retry sayısına ulaşıldı."""
 

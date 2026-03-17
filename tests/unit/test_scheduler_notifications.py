@@ -180,6 +180,7 @@ class TestSchedulerLessonReminder:
 
             await _trigger_attend_lesson(
                 user_id=123,
+                course_id="00000000-0000-0000-0000-000000000000",
                 course_name="Fizik",
                 dys_url="https://dys.example",
                 end_time="14:30",
@@ -210,6 +211,7 @@ class TestSchedulerLessonReminder:
 
             await _trigger_attend_lesson(
                 user_id=123,
+                course_id="00000000-0000-0000-0000-000000000000",
                 course_name="Fizik",
                 dys_url="https://dys.example",
                 end_time="14:30",
