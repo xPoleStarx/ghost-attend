@@ -103,7 +103,20 @@ Write-Host ""
 $startNow = Read-Host "Sistemi simdi baslatmak ister misiniz? (Y/n)"
 if ([string]::IsNullOrEmpty($startNow) -or $startNow -match "^[Yy]$") {
     Write-Host "Docker Compose ile sistem baslatiliyor..." -ForegroundColor Cyan
+
+    # Once DB + Redis are healthy, run migrations once, then start all services.
+    Write-Host "PostgreSQL ve Redis baslatiliyor..." -ForegroundColor Cyan
+    docker compose up -d postgres redis
+
+    Write-Host "Veritabaninin hazir olmasi bekleniyor..." -ForegroundColor Cyan
+    Start-Sleep -Seconds 5
+
+    Write-Host "Alembic migration'lari calistiriliyor (upgrade head)..." -ForegroundColor Cyan
+    docker compose run --rm bot alembic upgrade head
+
+    Write-Host "Tum servisler baslatiliyor..." -ForegroundColor Cyan
     docker compose up -d
+
     Write-Host "Sistem baslatildi! Loglari gormek icin: docker compose logs -f bot" -ForegroundColor Green
 } else {
     Write-Host "Kurulum tamamlandi. Istediginiz zaman 'docker compose up -d' ile baslatabilirsiniz."

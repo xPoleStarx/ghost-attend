@@ -32,11 +32,11 @@ async def init_scheduler():
 
             for user in active_users:
                 try:
-                    await schedule_all_courses_for_user(user.telegram_id)
+                    await schedule_all_courses_for_user(user.id)
                 except Exception as e:
                     log.error(
                         "scheduler.user_schedule_failed",
-                        user_id=user.telegram_id,
+                        user_id=user.id,
                         error=str(e),
                     )
 

@@ -16,6 +16,8 @@ from telegram.ext import (
     filters,
 )
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from src.bot.states import OnboardingState
 from src.core.logging import get_logger
 
@@ -236,8 +238,12 @@ async def handle_dys_password(update: Update, context: ContextTypes.DEFAULT_TYPE
                 dys_url=context.user_data["dys_url"],
             )
             await session.commit()
+    except SQLAlchemyError as e:
+        log.error("bot.onboard_creds_db_failed", user_id=user_id, error=str(e), exc_info=True)
+        await update.effective_chat.send_message("❌ Bilgiler kaydedilirken bir hata oluştu.")
+        return ConversationHandler.END
     except Exception as e:
-        log.error("bot.onboard_creds_failed", user_id=user_id, error=str(e))
+        log.error("bot.onboard_creds_failed", user_id=user_id, error=str(e), exc_info=True)
         await update.effective_chat.send_message("❌ Bilgiler kaydedilirken bir hata oluştu.")
         return ConversationHandler.END
 
@@ -399,7 +405,7 @@ async def _start_onboard_analysis(
         return OnboardingState.CONFIRM_COURSES
 
     except Exception as e:
-        log.error("bot.schedule_parse_failed", error=str(e))
+        log.error("bot.schedule_parse_failed", error=str(e), exc_info=True)
         try:
             await processing_msg.delete()
         except Exception:
@@ -430,6 +436,7 @@ async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAU
         from src.db.repositories.user import UserRepository
         from src.scheduler.lesson_scheduler import schedule_all_courses_for_user
 
+        # 1) DB'ye kaydet (DB hatalarını ayrı yakala)
         try:
             async with get_session() as session:
                 # 1. Kullanıcının veritabanında olduğundan emin ol
@@ -439,7 +446,7 @@ async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAU
                     await user_repo.create_or_update(
                         user_id=user_id,
                         first_name=update.effective_user.first_name,
-                        username=update.effective_user.username
+                        username=update.effective_user.username,
                     )
                     await session.commit()
 
@@ -447,15 +454,22 @@ async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAU
                 course_repo = CourseRepository(session)
                 await course_repo.bulk_create_from_parsed(user_id=user_id, parsed_courses=courses)
                 await session.commit()
-
-            # 3. Dersleri APScheduler'a ekle
-            scheduled_jobs = await schedule_all_courses_for_user(user_id)
-            log.info("bot.onboard_courses_scheduled", user_id=user_id, count=len(scheduled_jobs))
-
-        except Exception as e:
-            log.error("bot.onboard_db_schedule_failed", user_id=user_id, error=str(e))
+        except SQLAlchemyError as e:
+            log.error("bot.onboard_db_failed", user_id=user_id, error=str(e), exc_info=True)
             await query.edit_message_text(
                 "❌ Dersler kaydedilirken bir veritabanı hatası oluştu. Lütfen yöneticinize başvurun."
+            )
+            return ConversationHandler.END
+
+        # 2) Scheduler'a ekle (DB değil, zamanlama hatası olabilir)
+        try:
+            scheduled_jobs = await schedule_all_courses_for_user(user_id)
+            log.info("bot.onboard_courses_scheduled", user_id=user_id, count=len(scheduled_jobs))
+        except Exception as e:
+            log.error("bot.onboard_scheduler_failed", user_id=user_id, error=str(e), exc_info=True)
+            await query.edit_message_text(
+                "⚠️ Dersler veritabanına kaydedildi ancak zamanlanırken bir hata oluştu.\n"
+                "Lütfen birkaç dakika sonra `/status` ile kontrol edin veya yöneticinize başvurun."
             )
             return ConversationHandler.END
 

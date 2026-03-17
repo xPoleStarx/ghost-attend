@@ -177,6 +177,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
         Oluşturulan job ID'leri
     """
     from src.db.connection import get_session
+    from src.db.repositories.credential import CredentialRepository
     from src.db.repositories.course import CourseRepository
 
     # day_of_week (int) → Türkçe gün adı
@@ -185,6 +186,11 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
     job_ids = []
 
     async with get_session() as session:
+        cred_repo = CredentialRepository(session)
+        dys_url = await cred_repo.get_dys_url_for_user(user_id)
+        if not dys_url:
+            log.warning("scheduler.dys_url_missing", user_id=user_id)
+
         course_repo = CourseRepository(session)
         courses = await course_repo.get_user_courses(user_id, active_only=True)
 
@@ -195,6 +201,16 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
 
             day_name = day_int_to_name.get(course.day_of_week, "Pazartesi")
 
+            # DYS URL yoksa ve direct_url da yoksa bu ders zamanlanamaz
+            if not dys_url and not course.direct_url:
+                log.warning(
+                    "scheduler.course_skipped_missing_dys_url",
+                    user_id=user_id,
+                    course=str(course.id),
+                    course_name=course.name,
+                )
+                continue
+
             job_id = await schedule_course(
                 user_id=user_id,
                 course_id=str(course.id),
@@ -202,7 +218,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
                 day=day_name,
                 start_time=course.start_time.strftime("%H:%M"),
                 end_time=course.end_time.strftime("%H:%M"),
-                dys_url=course.dys_url or "",
+                dys_url=dys_url or "",
                 direct_url=course.direct_url,
             )
             job_ids.append(job_id)
