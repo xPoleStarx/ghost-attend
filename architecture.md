@@ -174,12 +174,14 @@ ghost-attend/
 │   │   ├── __init__.py
 │   │   ├── connection.py           # SQLAlchemy async engine
 │   │   ├── models.py               # ORM modelleri
-│   │   ├── repositories/
-│   │   │   ├── user.py
-│   │   │   ├── course.py
-│   │   │   └── session.py
-│   │   └── migrations/             # Alembic migration dosyaları
-│   │       └── versions/
+│   │   └── repositories/
+│   │       ├── user.py
+│   │       ├── course.py
+│   │       └── session.py
+│   │
+│   ├── alembic/                    # Alembic migration dosyaları
+│   │   ├── env.py
+│   │   └── versions/
 │   │
 │   ├── security/                   # Güvenlik katmanı
 │   │   ├── __init__.py

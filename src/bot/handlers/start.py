@@ -38,7 +38,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         ]
     ])
 
-    await update.message.send_message(
+    await update.message.reply_text(
         text=(
             f"👋 Hoş geldin {user.first_name}! Ben **GhostAttend**.\n\n"
             "Üniversitedeki online derslerine senin adına katılacağım.\n\n"

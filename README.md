@@ -50,17 +50,16 @@ Telegram Bot ←→ Redis ←→ Celery Worker ←→ browser-use + Playwright
 git clone https://github.com/xPoleStarx/ghost-attend.git
 cd ghost-attend
 
-# Linux/macOS için:
+# Kurulumu başlat (Linux/macOS)
 bash scripts/setup.sh
 
-# Windows (PowerShell) için:
+# Kurulumu başlat (Windows / PowerShell)
 .\scripts\setup.ps1
-
-# .env düzenle → TELEGRAM_BOT_TOKEN ve API key'leri gir
-docker compose up -d
 ```
 
-📖 Detaylı kurulum: [docs/SETUP.md](docs/SETUP.md)
+> 🪄 **Not:** Kurulum betiği size ihtiyacı olan API anahtarlarını sırayla soracak, şifrelerinizi tamamen otonom üretecek ve onayınızla birlikte sistemi ayağa kaldıracaktır. Ekstra dosya düzenlemenize veya komut çalıştırmanıza gerek yoktur!
+
+📖 Gelişmiş yapılandırmalar için: [docs/SETUP.md](docs/SETUP.md)
 
 ## 🛡️ Güvenlik
 

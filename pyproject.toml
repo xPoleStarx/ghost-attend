@@ -18,7 +18,7 @@ browser-use = "^0.1.40"
 playwright = "^1.44.0"
 
 # LLM
-anthropic = "^0.28.0"
+anthropic = "^0.49.0"
 openai = "^1.35.0"
 google-generativeai = "^0.7.0"
 langchain-google-genai = "*"

@@ -16,24 +16,17 @@
 git clone https://github.com/xPoleStarx/ghost-attend.git
 cd ghost-attend
 
-# 2. Tek tık kurulum scriptini çalıştır
-# (Bu script .env dosyanızı oluşturur, güvenli şifreleme anahtarını üretir ve izinleri ayarlar)
-bash scripts/setup.sh
+# 2. Kurulum sihirbazını başlat
+# (Bu script size LLM API ve Telegram anahtarlarınızı soracak ve .env dosyanızı kendisi yapılandıracaktır)
 
-# 3. .env dosyasını düzenle
-nano .env
-# → Sadece TELEGRAM_BOT_TOKEN ve LLM API (Google/OpenAI) key'lerini girmeniz yeterlidir.
-
-# 4. Sistemi başlat
-docker compose up -d
-
-# 5. Logları kontrol et
-docker compose logs -f bot
+bash scripts/setup.sh       # Linux / macOS
+# veya
+.\scripts\setup.ps1         # Windows (PowerShell)
 ```
 
-> 💡 **Not:** Veritabanı tabloları sistem başlatıldığında otomatik olarak oluşturulur. Ekstra bir veritabanı komutu çalıştırmanıza gerek yoktur!
+> 💡 **Not:** Kurulum sihirbazı size gerekli izinleri alıp, eksik şifreleri otonom olarak ürettikten sonra sistemi anında ayağa kaldırıp kaldırmayacağınızı sorar. Eğer "Evet" derseniz tüm Docker süreçleri ve veritabanı kurulumları arkaplanda gerçekleşir. Ekstra komut gerekmez!
 
-## .env Yapılandırması
+## .env Yapılandırması (İleri Düzey / Manuel)
 
 ### Zorunlu Alanlar
 
