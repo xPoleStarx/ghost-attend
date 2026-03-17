@@ -116,16 +116,17 @@ class NotificationService:
         self,
         user_id: int,
         course_name: str,
-        start_time: str,
+        start_time: str | None = None,
         minutes_before: int = 5,
     ) -> bool:
         """Ders başlamadan önce hatırlatma gönder."""
         safe_course = escape_md(course_name, version=1)
+        time_line = f"Saat: {start_time}\n\n" if start_time else "\n"
         return await self.send_message(
             user_id=user_id,
             text=(
                 f"⏰ *{safe_course}* dersi {minutes_before} dakika sonra başlıyor!\n"
-                f"Saat: {start_time}\n\n"
+                f"{time_line}"
                 "Agent hazırlanıyor... 🤖"
             ),
         )

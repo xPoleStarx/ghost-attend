@@ -151,12 +151,35 @@ async def _trigger_attend_lesson(
     Celery task'ı kuyruğa ekler.
     """
     from src.scheduler.tasks import attend_lesson_task
+    # NOTE: Bu import burada kalmalı; testler patch'leyebilmek için module-level isme ihtiyaç duyar.
+    from src.notifications.service import NotificationService
 
     log.info(
         "scheduler.triggering_task",
         user_id=user_id,
         course=course_name,
     )
+
+    # Ders başlamadan 5dk önce kullanıcıya hatırlatma gönder.
+    # Bildirim başarısız olsa bile ders katılım task'ı kuyruğa eklenmeye devam eder.
+    try:
+        if settings.TELEGRAM_BOT_TOKEN:
+            notifier = NotificationService(bot_token=settings.TELEGRAM_BOT_TOKEN)
+            await notifier.send_lesson_reminder(
+                user_id=user_id,
+                course_name=course_name,
+                start_time=None,
+                minutes_before=5,
+            )
+        else:
+            log.warning("scheduler.reminder_skipped_missing_bot_token", user_id=user_id)
+    except Exception as e:
+        log.warning(
+            "scheduler.reminder_failed",
+            user_id=user_id,
+            course=course_name,
+            error=str(e),
+        )
 
     attend_lesson_task.delay(
         user_id=user_id,

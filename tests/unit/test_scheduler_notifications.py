@@ -5,6 +5,8 @@ GhostAttend — Scheduler & Notification Unit Tests
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import time
+import sys
+import types
 
 from src.scheduler.lesson_scheduler import _parse_time, _get_cron_day_of_week
 
@@ -151,3 +153,67 @@ class TestNotificationService:
         assert "Fizik" in call_text
         assert "İngilizce" in call_text
         assert "Kimya" in call_text
+
+
+class TestSchedulerLessonReminder:
+    """Scheduler tetikinde ders hatırlatma testleri."""
+
+    @pytest.mark.asyncio
+    async def test_trigger_sends_reminder_then_enqueues_task(self, monkeypatch):
+        from src.scheduler.lesson_scheduler import _trigger_attend_lesson
+        from src.scheduler import lesson_scheduler
+
+        # Token var gibi davran (aksi halde reminder skip edilir)
+        monkeypatch.setattr(lesson_scheduler.settings, "TELEGRAM_BOT_TOKEN", "fake-token")
+
+        # Celery test ortamında kurulu olmayabilir. Import'u engellemek için sahte tasks modülü enjekte et.
+        fake_tasks_mod = types.ModuleType("src.scheduler.tasks")
+        fake_tasks_mod.attend_lesson_task = MagicMock()
+        fake_tasks_mod.attend_lesson_task.delay = MagicMock()
+        monkeypatch.setitem(sys.modules, "src.scheduler.tasks", fake_tasks_mod)
+
+        mock_notifier = AsyncMock()
+        mock_notifier.send_lesson_reminder = AsyncMock(return_value=True)
+
+        with patch("src.notifications.service.NotificationService", autospec=True) as notif_cls:
+            notif_cls.return_value = mock_notifier
+
+            await _trigger_attend_lesson(
+                user_id=123,
+                course_name="Fizik",
+                dys_url="https://dys.example",
+                end_time="14:30",
+                direct_url=None,
+                dys_search_hint=None,
+            )
+
+            mock_notifier.send_lesson_reminder.assert_awaited_once()
+            fake_tasks_mod.attend_lesson_task.delay.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_trigger_enqueues_even_if_reminder_fails(self, monkeypatch):
+        from src.scheduler.lesson_scheduler import _trigger_attend_lesson
+        from src.scheduler import lesson_scheduler
+
+        monkeypatch.setattr(lesson_scheduler.settings, "TELEGRAM_BOT_TOKEN", "fake-token")
+
+        fake_tasks_mod = types.ModuleType("src.scheduler.tasks")
+        fake_tasks_mod.attend_lesson_task = MagicMock()
+        fake_tasks_mod.attend_lesson_task.delay = MagicMock()
+        monkeypatch.setitem(sys.modules, "src.scheduler.tasks", fake_tasks_mod)
+
+        mock_notifier = AsyncMock()
+        mock_notifier.send_lesson_reminder = AsyncMock(side_effect=Exception("telegram down"))
+
+        with patch("src.notifications.service.NotificationService", autospec=True) as notif_cls:
+            notif_cls.return_value = mock_notifier
+
+            await _trigger_attend_lesson(
+                user_id=123,
+                course_name="Fizik",
+                dys_url="https://dys.example",
+                end_time="14:30",
+            )
+
+            mock_notifier.send_lesson_reminder.assert_awaited_once()
+            fake_tasks_mod.attend_lesson_task.delay.assert_called_once()
