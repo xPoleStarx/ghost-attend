@@ -47,7 +47,7 @@ Telegram Bot ←→ Redis ←→ Celery Worker ←→ browser-use + Playwright
 **Ön Koşullar:** Sisteminizde [Docker](https://docs.docker.com/get-docker/) ve [Docker Compose](https://docs.docker.com/compose/) kurulu olmalıdır. Ayrıca bir [Telegram Bot Token](https://core.telegram.org/bots#how-do-i-create-a-bot) ve en az bir LLM Provider API Key (Google Gemini, OpenAI veya Anthropic) gereklidir.
 
 ```bash
-git clone https://github.com/your-username/ghost-attend.git
+git clone https://github.com/xPoleStarx/ghost-attend.git
 cd ghost-attend
 
 # Linux/macOS için:
@@ -83,7 +83,7 @@ MIT — [LICENSE](LICENSE)
 
 ## 💬 Destek ve İletişim
 
-Herhangi bir sorun yaşarsanız, üniversitenizin portalı desteklenmiyorsa veya yeni bir özellik önermek isterseniz lütfen [Issues](https://github.com/your-username/ghost-attend/issues) sekmesinden bildirimde bulunun.
+Herhangi bir sorun yaşarsanız, üniversitenizin portalı desteklenmiyorsa veya yeni bir özellik önermek isterseniz lütfen [Issues](https://github.com/xPoleStarx/ghost-attend/issues) sekmesinden bildirimde bulunun.
 
 > ⚠️ **Sorumluluk:** Bu yazılım eğitim amaçlıdır. Üniversite yönetmeliklerine
 > ve kullanılan platform ToS'larına uygunluk kullanıcının sorumluluğundadır.

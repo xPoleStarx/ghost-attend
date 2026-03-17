@@ -13,7 +13,7 @@
 
 ```bash
 # 1. Repo'yu klonla
-git clone https://github.com/your-username/ghost-attend.git
+git clone https://github.com/xPoleStarx/ghost-attend.git
 cd ghost-attend
 
 # 2. Tek tık kurulum scriptini çalıştır
