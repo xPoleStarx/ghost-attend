@@ -15,6 +15,7 @@ from src.bot.handlers.mfa import get_mfa_handlers
 from src.bot.handlers.schedule import get_schedule_handlers
 from src.bot.handlers.session import get_session_handlers
 from src.bot.handlers.start import get_onboarding_handler
+from src.bot.safe_bot import SafeExtBot
 from src.core.config import settings
 from src.core.logging import configure_logging, get_logger
 
@@ -24,7 +25,8 @@ log = get_logger(__name__)
 def create_application() -> Application:
     """Telegram bot Application oluştur ve handler'ları register et."""
 
-    builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
+    # Merkezi metin sanitize katmanı için SafeExtBot kullan.
+    builder = Application.builder().bot(SafeExtBot(token=settings.TELEGRAM_BOT_TOKEN))
 
     app = builder.build()
 
