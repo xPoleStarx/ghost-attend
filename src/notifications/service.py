@@ -11,6 +11,7 @@ import io
 from telegram import Bot, InputFile
 
 from src.core.logging import get_logger
+from src.bot.utils.safe_text import escape_md
 
 log = get_logger(__name__)
 
@@ -119,10 +120,11 @@ class NotificationService:
         minutes_before: int = 5,
     ) -> bool:
         """Ders başlamadan önce hatırlatma gönder."""
+        safe_course = escape_md(course_name, version=1)
         return await self.send_message(
             user_id=user_id,
             text=(
-                f"⏰ *{course_name}* dersi {minutes_before} dakika sonra başlıyor!\n"
+                f"⏰ *{safe_course}* dersi {minutes_before} dakika sonra başlıyor!\n"
                 f"Saat: {start_time}\n\n"
                 "Agent hazırlanıyor... 🤖"
             ),
@@ -135,11 +137,12 @@ class NotificationService:
         duration_minutes: int | None = None,
     ) -> bool:
         """Ders tamamlandı bildirimi."""
+        safe_course = escape_md(course_name, version=1)
         duration_text = f"\nSüre: ~{duration_minutes} dakika" if duration_minutes else ""
         return await self.send_message(
             user_id=user_id,
             text=(
-                f"✅ *{course_name}* dersi tamamlandı!{duration_text}\n\n"
+                f"✅ *{safe_course}* dersi tamamlandı!{duration_text}\n\n"
                 "Detaylar için /logs yaz."
             ),
         )
@@ -157,17 +160,17 @@ class NotificationService:
         if completed:
             lines.append("✅ *Tamamlanan:*")
             for c in completed:
-                lines.append(f"  • {c}")
+                lines.append(f"  • {escape_md(c, version=1)}")
 
         if failed:
             lines.append("\n❌ *Başarısız:*")
             for f in failed:
-                lines.append(f"  • {f}")
+                lines.append(f"  • {escape_md(f, version=1)}")
 
         if upcoming:
             lines.append("\n📅 *Yarınki dersler:*")
             for u in upcoming:
-                lines.append(f"  • {u}")
+                lines.append(f"  • {escape_md(u, version=1)}")
 
         if not completed and not failed:
             lines.append("Bugün ders yoktu.")

@@ -300,3 +300,28 @@ class TestFormatCoursesForTelegram:
         text = format_courses_for_telegram(result)
         assert "Uyarılar" in text
         assert "Platform belirsiz" in text
+
+    def test_format_escapes_dynamic_fields_for_markdown(self):
+        """Ders adı / hoca adı / uyarılar Markdown karakterleri içerse de güvenli olmalı."""
+        result = ScheduleParseResult(
+            courses=[
+                ParsedCourse(
+                    ders_adi="A_B [X] (Y)",
+                    gun="Cuma",
+                    baslangic_saati="10:00",
+                    bitis_saati="11:00",
+                    ogretim_uyesi="Dr. John_Doe [Test]",
+                    platform="teams",
+                    online_mi=True,
+                    guvven_skoru=0.95,
+                ),
+            ],
+            raw_text="test",
+            parse_warnings=["Uyarı: A_B [X]"],
+        )
+
+        text = format_courses_for_telegram(result)
+        # '_' ve '[' gibi karakterler kaçışlanmalı
+        assert "A\\_B" in text
+        assert "\\[" in text
+        assert "John\\_Doe" in text

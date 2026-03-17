@@ -19,6 +19,7 @@ from telegram.ext import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.bot.states import OnboardingState
+from src.bot.utils.safe_text import escape_dynamic_text
 from src.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -414,7 +415,7 @@ async def _start_onboard_analysis(
         await chat.send_message(
             f"❌ Ders programı analiz edilirken bir hata oluştu.\n"
             f"Tekrar dene veya /cancel ile iptal et.\n\n"
-            f"_Hata: {str(e)[:100]}_",
+            f"Hata: {escape_dynamic_text(str(e)[:200], parse_mode='Markdown')}",
             parse_mode="Markdown",
         )
         _init_buffers(context)
@@ -589,7 +590,7 @@ async def handle_onboard_chat_message(update: Update, context: ContextTypes.DEFA
         except Exception:
             pass
         await update.message.reply_text(
-            f"❌ Bir hata oluştu: _{str(e)[:100]}_\nTekrar dene.",
+            f"❌ Bir hata oluştu: {escape_dynamic_text(str(e)[:200], parse_mode='Markdown')}\nTekrar dene.",
             parse_mode="Markdown",
         )
 

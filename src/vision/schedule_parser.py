@@ -15,6 +15,7 @@ from src.core.exceptions import ScheduleParseError
 from src.core.logging import get_logger
 from src.core.models import ParsedCourse, ScheduleParseResult
 from src.vision.prompts import SCHEDULE_PARSE_PROMPT
+from src.bot.utils.safe_text import escape_md
 
 log = get_logger(__name__)
 
@@ -385,11 +386,13 @@ def format_courses_for_telegram(result: ScheduleParseResult) -> str:
         confidence = "✅" if course.guvven_skoru >= 0.8 else "❓"
         platform_text = course.platform.upper() if course.platform != "unknown" else "Belirsiz"
         emoji = gun_emoji.get(course.gun, "⚪")
+        course_name = escape_md(course.ders_adi, version=1)
+        instructor = escape_md(course.ogretim_uyesi or "Belirtilmemiş", version=1)
 
         lines.append(
-            f"{i}. {confidence} **{course.ders_adi}**\n"
+            f"{i}. {confidence} **{course_name}**\n"
             f"   {emoji} {course.gun} {course.baslangic_saati}–{course.bitis_saati}\n"
-            f"   👨‍🏫 {course.ogretim_uyesi or 'Belirtilmemiş'}\n"
+            f"   👨‍🏫 {instructor}\n"
             f"   🖥️ {platform_text}"
         )
 
@@ -405,6 +408,6 @@ def format_courses_for_telegram(result: ScheduleParseResult) -> str:
     if result.parse_warnings:
         lines.append("⚠️ **Uyarılar:**")
         for warning in result.parse_warnings:
-            lines.append(f"  • {warning}")
+            lines.append(f"  • {escape_md(warning, version=1)}")
 
     return "\n".join(lines)

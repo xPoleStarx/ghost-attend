@@ -21,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.bot.states import OnboardingState
 from src.core.logging import get_logger
+from src.bot.utils.safe_text import escape_dynamic_text
 from src.vision.schedule_parser import format_courses_for_telegram, parse_schedule_images
 
 log = get_logger(__name__)
@@ -227,7 +228,7 @@ async def _start_analysis(
         await chat.send_message(
             f"❌ Ders programı analiz edilirken bir hata oluştu.\n"
             f"Tekrar dene veya /cancel ile iptal et.\n\n"
-            f"_Hata: {str(e)[:100]}_",
+            f"Hata: {escape_dynamic_text(str(e)[:200], parse_mode='Markdown')}",
             parse_mode="Markdown",
         )
         _init_buffers(context)
@@ -547,7 +548,7 @@ async def _handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             pass
         await update.message.reply_text(
-            f"❌ Bir hata oluştu: _{str(e)[:100]}_\nTekrar dene.",
+            f"❌ Bir hata oluştu: {escape_dynamic_text(str(e)[:200], parse_mode='Markdown')}\nTekrar dene.",
             parse_mode="Markdown",
         )
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 
 _UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
@@ -68,4 +69,65 @@ def maybe_unescape_json_string(text: str) -> str:
             return decoded
 
     return decoded
+
+
+def _parse_mode_str(parse_mode: Any) -> str | None:
+    """
+    PTB parse_mode bazen string ("Markdown") bazen enum benzeri değerler olabilir.
+    Burada sade bir string'e normalize ediyoruz.
+    """
+    if parse_mode is None:
+        return None
+    if isinstance(parse_mode, str):
+        return parse_mode
+    try:
+        return str(parse_mode)
+    except Exception:
+        return None
+
+
+def escape_md(text: str, *, version: int = 1) -> str:
+    """
+    Telegram Markdown için güvenli escape.
+
+    Not: Bu fonksiyon dinamik alanlar (ders adı, hoca adı, uyarı metni vb.) için kullanılmalı.
+    Sabit UI biçimlendirmeleri (**bold**, _italic_) bu fonksiyonun dışında tutulmalıdır.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    try:
+        from telegram.helpers import escape_markdown
+    except Exception:
+        return text
+
+    try:
+        return escape_markdown(text, version=version)
+    except Exception:
+        return text
+
+
+def normalize_outgoing_text(text: str, *, parse_mode: Any = None) -> str:
+    """
+    Outgoing metni normalize et:
+    - Yanlışlıkla json.dumps ile escape edilmiş string'i geri al
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    # Burada bilinçli Markdown biçimlendirmelerini (örn: **bold**) bozmayacak şekilde
+    # SADECE yanlışlıkla JSON-escape edilmiş metni düzeltiyoruz.
+    # Markdown escape işlemi, sadece dinamik alanlara, ilgili formatter/template içinde uygulanmalı.
+    _ = parse_mode  # gelecekte gerekirse kullanılabilir
+    return maybe_unescape_json_string(text)
+
+
+def escape_dynamic_text(text: str, *, parse_mode: Any = "Markdown") -> str:
+    """
+    Dinamik (kullanıcı/LLM/DB kaynaklı) metni Telegram parse_mode'a göre escape et.
+    """
+    pm = _parse_mode_str(parse_mode) or "Markdown"
+    if pm in ("MarkdownV2", "MARKDOWN_V2", "MARKDOWNV2"):
+        return escape_md(text, version=2)
+    return escape_md(text, version=1)
 
