@@ -49,7 +49,13 @@ Telegram Bot ←→ Redis ←→ Celery Worker ←→ browser-use + Playwright
 ```bash
 git clone https://github.com/your-username/ghost-attend.git
 cd ghost-attend
-./scripts/setup.sh
+
+# Linux/macOS için:
+bash scripts/setup.sh
+
+# Windows (PowerShell) için:
+.\scripts\setup.ps1
+
 # .env düzenle → TELEGRAM_BOT_TOKEN ve API key'leri gir
 docker compose up -d
 ```
