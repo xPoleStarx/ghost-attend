@@ -231,8 +231,7 @@ async def handle_dys_password(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_schedule_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Ders programı fotoğrafını al.
-    Sprint 2'de Vision LLM parse devreye girecek.
+    Ders programı fotoğrafını al, Vision LLM (Gemini) ile parse edip onay ekranı sun.
     """
     if not update.message.photo:
         await update.message.reply_text(
@@ -247,28 +246,116 @@ async def handle_schedule_photo(update: Update, context: ContextTypes.DEFAULT_TY
     # Context'e kaydet
     context.user_data["schedule_photo_file_id"] = photo.file_id
 
-    await update.message.reply_text(
+    processing_msg = await update.message.reply_text(
         text="🔍 Ders programı analiz ediliyor... ⏳",
     )
 
-    # TODO (Sprint 2): Vision LLM ile parse et ve sonuçları göster
-    # Şimdilik placeholder
+    from src.vision.schedule_parser import format_courses_for_telegram, parse_schedule_image
 
-    await update.message.reply_text(
+    try:
+        # Fotoğrafı indir
+        image_bytes = await file.download_as_bytearray()
+
+        # Vision LLM ile parse et
+        result = await parse_schedule_image(
+            image_bytes=bytes(image_bytes),
+            mime_type="image/jpeg",
+        )
+
+        # Sonuçları context'e kaydet
+        context.user_data["parsed_courses"] = [c.model_dump() for c in result.courses]
+        context.user_data["parse_warnings"] = result.parse_warnings
+
+        # İşleniyor mesajını sil
+        try:
+            await processing_msg.delete()
+        except Exception:
+            pass
+
+        if not result.courses:
+            await update.message.reply_text(
+                "❌ Ders programından hiç ders tespit edilemedi.\n"
+                "Lütfen daha net bir fotoğraf gönder veya /cancel ile iptal et."
+            )
+            return OnboardingState.ASK_SCHEDULE_PHOTO
+
+        # Sonuçları göster
+        text = format_courses_for_telegram(result)
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Tümünü Onayla ✅", callback_data="onboard_confirm_all"),
+                InlineKeyboardButton("Baştan Al 🔄", callback_data="onboard_restart"),
+            ],
+            [
+                InlineKeyboardButton("Devam et (Düzenleme /courses'da)", callback_data="onboard_confirm_all"),
+            ]
+        ])
+
+        await update.message.reply_text(
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+
+        return OnboardingState.CONFIRM_COURSES
+
+    except Exception as e:
+        log.error("bot.schedule_parse_failed", error=str(e))
+        try:
+            await processing_msg.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            f"❌ Ders programı analiz edilirken bir hata oluştu.\n"
+            f"Tekrar dene veya /cancel ile iptal et.\n\n"
+            f"_Hata: {str(e)[:100]}_",
+            parse_mode="Markdown",
+        )
+        return OnboardingState.ASK_SCHEDULE_PHOTO
+
+
+async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Tüm dersleri onayla ve kurulumu tamamla."""
+    query = update.callback_query
+    await query.answer()
+
+    courses = context.user_data.get("parsed_courses", [])
+    course_count = len(courses)
+
+    # TODO (Sprint 3/5): DB kaydı ve Scheduler entegrasyonu
+
+    await query.edit_message_text(
         text=(
-            "📚 Ders programı kaydedildi!\n\n"
-            "_(Vision LLM entegrasyonu Sprint 2'de aktifleşecek)_\n\n"
-            "🎉 Kurulum tamamlandı!\n\n"
+            f"🎉 Harika! **{course_count} ders** kaydedildi.\n\n"
+            "Sistem her ders başlamadan 5 dakika önce otomatik olarak "
+            "harekete geçecek. Derse girildiğinde sana bildirim göndereceğim.\n\n"
+            "Eğer bir dersi düzenlemek istersen `/courses` komutunu kullanabilirsin.\n\n"
             "Yönetim komutları:\n"
             "/status — aktif oturumu gör\n"
-            "/courses — derslerini listele\n"
             "/cancel — aktif oturumu iptal et\n"
-            "/help — komut listesi"
+            "/courses — derslerini listele\n"
+            "/help — komut listesi\n"
+            "/reauth — kimlik doğrulamayı yenile"
         ),
         parse_mode="Markdown",
     )
-
     return ConversationHandler.END
+
+
+async def handle_onboard_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ders programı yüklemeyi baştan al."""
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.pop("parsed_courses", None)
+    context.user_data.pop("parse_warnings", None)
+
+    await query.edit_message_text(
+        "📷 Yeni ders programı fotoğrafını gönder."
+    )
+    return OnboardingState.ASK_SCHEDULE_PHOTO
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -303,6 +390,10 @@ def get_onboarding_handler() -> ConversationHandler:
             OnboardingState.ASK_SCHEDULE_PHOTO: [
                 MessageHandler(filters.PHOTO, handle_schedule_photo),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_photo),
+            ],
+            OnboardingState.CONFIRM_COURSES: [
+                CallbackQueryHandler(handle_onboard_confirm_all, pattern="^onboard_confirm_all$"),
+                CallbackQueryHandler(handle_onboard_restart, pattern="^onboard_restart$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel_command)],

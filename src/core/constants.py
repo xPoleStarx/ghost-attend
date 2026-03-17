@@ -10,8 +10,8 @@ from typing import Final
 # ── LLM Model Tanımları ──
 LLM_MODELS: Final[dict[str, dict[str, str]]] = {
     "google": {
-        "agent": "gemini-3.1-flash-lite",
-        "vision": "gemini-3.1-flash-lite",
+        "agent": "gemini-3.1-flash-lite-preview",
+        "vision": "gemini-3.1-flash-lite-preview",
     },
     "openai": {
         "agent": "gpt-4o-mini",
