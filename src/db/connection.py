@@ -5,6 +5,7 @@ Async engine + session factory yönetimi.
 """
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -31,6 +32,7 @@ async_session_factory = async_sessionmaker(
 )
 
 
+@asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency veya genel kullanım için async session üreteci."""
     async with async_session_factory() as session:

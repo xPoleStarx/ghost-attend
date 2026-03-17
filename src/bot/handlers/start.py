@@ -321,19 +321,53 @@ async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
 
+    user_id = update.effective_user.id
     courses = context.user_data.get("parsed_courses", [])
     course_count = len(courses)
 
-    # TODO (Sprint 3/5): DB kaydı ve Scheduler entegrasyonu
+    if courses:
+        from src.db.connection import get_session
+        from src.db.repositories.course import CourseRepository
+        from src.db.repositories.user import UserRepository
+        from src.scheduler.lesson_scheduler import schedule_all_courses_for_user
+
+        try:
+            async with get_session() as session:
+                # 1. Kullanıcının veritabanında olduğundan emin ol (Eğer henüz yoksa)
+                user_repo = UserRepository(session)
+                user = await user_repo.get_by_id(user_id)
+                if not user:
+                    await user_repo.create_or_update(
+                        user_id=user_id,
+                        first_name=update.effective_user.first_name,
+                        username=update.effective_user.username
+                    )
+                    await session.commit()
+
+                # 2. Dersleri DB'ye kaydet
+                course_repo = CourseRepository(session)
+                await course_repo.bulk_create_from_parsed(user_id=user_id, parsed_courses=courses)
+                await session.commit()
+
+            # 3. Dersleri Redis üzerinden APScheduler'a ekle
+            scheduled_jobs = await schedule_all_courses_for_user(user_id)
+            log.info("bot.onboard_courses_scheduled", user_id=user_id, count=len(scheduled_jobs))
+
+        except Exception as e:
+            log.error("bot.onboard_db_schedule_failed", user_id=user_id, error=str(e))
+            await query.edit_message_text(
+                "❌ Dersler kaydedilirken bir veritabanı hatası oluştu. Lütfen yöneticinize başvurun."
+            )
+            return ConversationHandler.END
 
     await query.edit_message_text(
         text=(
-            f"🎉 Harika! **{course_count} ders** kaydedildi.\n\n"
+            f"🎉 Harika! **{course_count} ders** başarıyla veritabanına kaydedildi ve zamanlandı.\n\n"
             "Sistem her ders başlamadan 5 dakika önce otomatik olarak "
             "harekete geçecek. Derse girildiğinde sana bildirim göndereceğim.\n\n"
             "Eğer bir dersi düzenlemek istersen `/courses` komutunu kullanabilirsin.\n\n"
             "Yönetim komutları:\n"
-            "/status — aktif oturumu gör\n"
+            "/status — aktif oturumu ve zamanlanmış derslerini gör\n"
             "/cancel — aktif oturumu iptal et\n"
             "/courses — derslerini listele\n"
             "/help — komut listesi\n"

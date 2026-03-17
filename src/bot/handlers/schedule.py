@@ -112,19 +112,49 @@ async def _handle_confirm_all(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
+    user_id = update.effective_user.id
     courses = context.user_data.get("parsed_courses", [])
     course_count = len(courses)
 
-    # TODO: DB'ye kaydet ve scheduler'a ekle
-    # Bu kısım Sprint 3 ve 5'te entegre edilecek
+    if courses:
+        from src.db.connection import get_session
+        from src.db.repositories.course import CourseRepository
+        from src.db.repositories.user import UserRepository
+        from src.scheduler.lesson_scheduler import schedule_all_courses_for_user
+
+        try:
+            async with get_session() as session:
+                user_repo = UserRepository(session)
+                user = await user_repo.get_by_id(user_id)
+                if not user:
+                    await user_repo.create_or_update(
+                        user_id=user_id,
+                        first_name=update.effective_user.first_name,
+                        username=update.effective_user.username
+                    )
+                    await session.commit()
+
+                course_repo = CourseRepository(session)
+                await course_repo.bulk_create_from_parsed(user_id=user_id, parsed_courses=courses)
+                await session.commit()
+
+            scheduled_jobs = await schedule_all_courses_for_user(user_id)
+            log.info("bot.schedule_courses_scheduled", user_id=user_id, count=len(scheduled_jobs))
+
+        except Exception as e:
+            log.error("bot.schedule_db_schedule_failed", user_id=user_id, error=str(e))
+            await query.edit_message_text(
+                "❌ Dersler kaydedilirken bir veritabanı hatası oluştu. Lütfen yöneticinize başvurun."
+            )
+            return ConversationHandler.END
 
     await query.edit_message_text(
         text=(
-            f"🎉 Harika! **{course_count} ders** kaydedildi.\n\n"
+            f"🎉 Harika! **{course_count} ders** başarıyla veritabanına kaydedildi ve zamanlandı.\n\n"
             "Sistem her ders başlamadan 5 dakika önce otomatik olarak "
             "harekete geçecek. Derse girildiğinde sana bildirim göndereceğim.\n\n"
             "Yönetim komutları:\n"
-            "/status — aktif oturumu gör\n"
+            "/status — aktif oturumu ve zamanlanmış derslerini gör\n"
             "/cancel — aktif oturumu iptal et\n"
             "/courses — derslerini listele\n"
             "/reauth — kimlik doğrulamayı yenile"
@@ -289,12 +319,16 @@ def get_schedule_upload_handler() -> ConversationHandler:
 # ── Basit Komutlar ──
 
 async def courses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/courses — Kayıtlı dersleri listele."""
+    """/courses — Kayıtlı dersleri listele (DB'den)."""
     user = update.effective_user
     log.info("bot.courses", user_id=user.id)
 
-    # TODO: DB'den dersleri çek
-    saved = context.user_data.get("parsed_courses", [])
+    from src.db.connection import get_session
+    from src.db.repositories.course import CourseRepository
+
+    async with get_session() as session:
+        course_repo = CourseRepository(session)
+        saved = await course_repo.get_user_courses(user.id, active_only=True)
 
     if not saved:
         await update.message.reply_text(
@@ -304,40 +338,49 @@ async def courses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    from src.core.constants import DAYS_MAP
+    
+    # Reverse map dictionary for day names to match DB numbers
+    day_names = {v: k for k, v in {
+        "Pazartesi": 0, "Salı": 1, "Çarşamba": 2, "Perşembe": 3, 
+        "Cuma": 4, "Cumartesi": 5, "Pazar": 6
+    }.items()}
+
     lines = ["📚 **Kayıtlı Dersler**\n"]
     for i, c in enumerate(saved, 1):
-        online = "🟢" if c.get("online_mi") else "🔴" if c.get("online_mi") is False else "🟡"
         lines.append(
-            f"{i}. {online} **{c['ders_adi']}**\n"
-            f"   {c['gun']} {c['baslangic_saati']}–{c['bitis_saati']}"
+            f"{i}. ✅ **{c.name}**\n"
+            f"   {day_names.get(c.day_of_week, 'Bilinmeyen')} {c.start_time.strftime('%H:%M')}–{c.end_time.strftime('%H:%M')}"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/schedule — Bu hafta/bugünün derslerini göster."""
+    """/schedule — Bugünün derslerini göster."""
     user = update.effective_user
     log.info("bot.schedule", user_id=user.id)
 
     from datetime import datetime
+    from src.db.connection import get_session
+    from src.db.repositories.course import CourseRepository
 
-    from src.core.constants import DAYS_TR
+    # Pazartesi 0, Pazar 6
+    today_num = datetime.now().weekday()
 
-    today = datetime.now().strftime("%A")
-    day_map_reverse = {v: k for k, v in DAYS_TR.items()}
+    async with get_session() as session:
+        course_repo = CourseRepository(session)
+        todays_courses = await course_repo.get_courses_for_day(user.id, today_num)
 
-    saved = context.user_data.get("parsed_courses", [])
-
-    if not saved:
-        await update.message.reply_text("📅 Henüz ders kaydedilmemiş.")
+    if not todays_courses:
+        await update.message.reply_text("📅 Bugün için planlanmış dersiniz bulunmuyor.")
         return
 
-    await update.message.reply_text(
-        "📅 **Bugünün Dersleri**\n\n"
-        "_(Zamanlayıcı Sprint 5'te aktifleşecek)_",
-        parse_mode="Markdown",
-    )
+    lines = ["📅 **Bugünün Dersleri**\n"]
+    for c in todays_courses:
+        lines.append(f"⏰ {c.start_time.strftime('%H:%M')} — **{c.name}**")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 def get_schedule_handlers() -> list:
