@@ -99,6 +99,34 @@ class SessionRepository:
         )
         return list(result.scalars().all())
 
+    async def update_metadata(self, session_id: uuid.UUID | str, metadata: dict) -> None:
+        """Merge metadata into the session record."""
+        agent_session = await self.get_by_id(uuid.UUID(str(session_id)))
+        if agent_session is None:
+            return
+        merged = dict(agent_session.metadata_ or {})
+        merged.update(metadata)
+        await self.session.execute(
+            update(AgentSession)
+            .where(AgentSession.id == agent_session.id)
+            .values(metadata_=merged)
+        )
+
+    async def append_metadata_event(self, session_id: uuid.UUID | str, key: str, entry: dict) -> None:
+        """Append an entry to a metadata list."""
+        agent_session = await self.get_by_id(uuid.UUID(str(session_id)))
+        if agent_session is None:
+            return
+        merged = dict(agent_session.metadata_ or {})
+        values = list(merged.get(key) or [])
+        values.append(entry)
+        merged[key] = values[-100:]
+        await self.session.execute(
+            update(AgentSession)
+            .where(AgentSession.id == agent_session.id)
+            .values(metadata_=merged)
+        )
+
     # ── Checkpoint Methods ──
 
     async def add_checkpoint(

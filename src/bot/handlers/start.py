@@ -715,5 +715,5 @@ def get_onboarding_handler() -> ConversationHandler:
         name="onboarding",
         persistent=True,
         allow_reentry=True,
-        block=False,
+        block=True,
     )

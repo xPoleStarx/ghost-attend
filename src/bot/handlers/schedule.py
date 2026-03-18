@@ -771,7 +771,7 @@ def get_schedule_upload_handler() -> ConversationHandler:
         fallbacks=[CommandHandler("cancel", _cancel_schedule)],
         name="schedule_upload",
         persistent=True,
-        block=False,
+        block=True,
     )
 
 

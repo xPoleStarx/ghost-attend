@@ -183,13 +183,20 @@ class TestSchedulerLessonReminder:
                 course_id="00000000-0000-0000-0000-000000000000",
                 course_name="Fizik",
                 dys_url="https://dys.example",
+                start_time="14:00",
                 end_time="14:30",
                 direct_url=None,
                 dys_search_hint=None,
             )
 
-            mock_notifier.send_lesson_reminder.assert_awaited_once()
+            mock_notifier.send_lesson_reminder.assert_awaited_once_with(
+                user_id=123,
+                course_name="Fizik",
+                start_time="14:00",
+                minutes_before=lesson_scheduler.settings.MEETING_START_OFFSET_MINUTES,
+            )
             fake_tasks_mod.attend_lesson_task.delay.assert_called_once()
+            assert fake_tasks_mod.attend_lesson_task.delay.call_args.kwargs["start_time"] == "14:00"
 
     @pytest.mark.asyncio
     async def test_trigger_enqueues_even_if_reminder_fails(self, monkeypatch):
@@ -214,6 +221,7 @@ class TestSchedulerLessonReminder:
                 course_id="00000000-0000-0000-0000-000000000000",
                 course_name="Fizik",
                 dys_url="https://dys.example",
+                start_time="14:00",
                 end_time="14:30",
             )
 

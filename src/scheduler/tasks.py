@@ -45,8 +45,8 @@ def _run_async(coro):
     Her worker process'i için tek bir event loop oluşturur ve tüm async
     görevleri bu loop üzerinde çalıştırır. Böylece asyncpg/SQLAlchemy
     bağlantıları farklı loop'lara dağılmadığı için
-    \"Future attached to a different loop\" ve
-    \"Event loop is closed\" tipindeki hatalar engellenir.
+    "Future attached to a different loop" ve
+    "Event loop is closed" tipindeki hatalar engellenir.
     """
     global _worker_loop
 
@@ -71,6 +71,7 @@ def attend_lesson_task(
     course_name: str,
     dys_url: str,
     end_time: str,
+    start_time: str | None = None,
     direct_url: str | None = None,
     dys_search_hint: str | None = None,
 ):
@@ -128,10 +129,15 @@ def attend_lesson_task(
 
             # Kullanıcıya "başlıyor" bildirimi (job tetiklendiğinde 5dk önce çalışır).
             try:
+                start_time_line = ""
+                if start_time:
+                    start_time_line = f"Planlanan baslangic saati: {start_time}\n"
+
                 await notifier.send_message(
                     user_id=user_id,
                     text=(
                         f"⏰ **{course_name}** dersi için otomatik katılım başlatılıyor...\n"
+                        f"{start_time_line}"
                         "Tarayıcı açılıp derse girildiğinde ekran görüntüleri/bildirimler gelmeye başlayacak."
                     ),
                     parse_mode="Markdown",

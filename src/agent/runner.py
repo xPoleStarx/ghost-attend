@@ -1,19 +1,16 @@
-"""
-GhostAttend — Agent Runner
+"""GhostAttend - Agent Runner."""
 
-Agent lifecycle yönetimi: browser context oluşturma, task çalıştırma,
-hata yakalama, retry logic, session durumu güncelleme.
-architecture.md Section 9.2
-"""
+from __future__ import annotations
 
 import asyncio
 import os
 import time
-from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
+from playwright.async_api import async_playwright
 
 from src.agent.checkpoints import CheckpointHandler
+from src.agent.llm import call_llm
 from src.agent.mfa_handler import MFAHandler
 from src.agent.task_builder import (
     build_cookie_login_task,
@@ -28,7 +25,6 @@ from src.core.constants import (
     ERROR_DYS_LOGIN_FAILED,
     ERROR_JOIN_FAILED,
     ERROR_LINK_NOT_FOUND,
-    ERROR_MAX_RETRY_EXCEEDED,
     ERROR_MFA_REQUIRED,
     ERROR_PAGE_FROZEN,
     REDIS_PREFIX_CANCEL,
@@ -46,15 +42,15 @@ from src.core.exceptions import (
     MeetingNotStarted,
 )
 from src.core.logging import get_logger
+from src.runtime import BrowserControlService, BrowserSession, RuntimeEngine, RuntimeIPC
+from src.runtime.models import RuntimeGoal
+from src.runtime.planner import RuntimePlanner
 
 log = get_logger(__name__)
 
 
 class AgentRunner:
-    """
-    Web agent lifecycle manager.
-    browser-use + Playwright ile ders katılımını yönetir.
-    """
+    """Web agent lifecycle manager."""
 
     def __init__(
         self,
@@ -73,7 +69,7 @@ class AgentRunner:
         self.session_repo = session_repo
 
     def _create_llm(self):
-        """Config'e göre LLM instance oluştur."""
+        """Create the legacy browser-use LLM client."""
         provider = settings.AGENT_LLM_PROVIDER
         model = settings.AGENT_LLM_MODEL
 
@@ -85,7 +81,7 @@ class AgentRunner:
                 temperature=0,
                 google_api_key=settings.GOOGLE_API_KEY,
             )
-        elif provider == "openai":
+        if provider == "openai":
             from langchain_openai import ChatOpenAI
 
             return ChatOpenAI(
@@ -93,7 +89,7 @@ class AgentRunner:
                 temperature=0,
                 api_key=settings.OPENAI_API_KEY,
             )
-        elif provider == "anthropic":
+        if provider == "anthropic":
             from langchain_anthropic import ChatAnthropic
 
             return ChatAnthropic(
@@ -101,8 +97,7 @@ class AgentRunner:
                 temperature=0,
                 api_key=settings.ANTHROPIC_API_KEY,
             )
-        else:
-            raise ValueError(f"Desteklenmeyen LLM provider: {provider}")
+        raise ValueError(f"Unsupported LLM provider: {provider}")
 
     async def run(
         self,
@@ -116,24 +111,7 @@ class AgentRunner:
         cookies: list[dict] | None = None,
         mfa_code: str | None = None,
     ) -> dict:
-        """
-        Agent'ı çalıştır.
-
-        Args:
-            course_name: Ders adı
-            dys_url: DYS adresi
-            username: DYS/Teams kullanıcı adı
-            password: DYS/Teams şifre
-            end_time: Ders bitiş saati "HH:MM"
-            direct_url: Direkt toplantı linki (varsa DYS atlanır)
-            dys_search_hint: DYS'de arama ipucu
-            cookies: Önceden kaydedilmiş session cookie'leri
-
-        Returns:
-            {"status": "completed", "raw": str} veya exception fırlatır
-        """
-        from browser_use import Agent
-
+        """Run the session using the custom runtime first, then legacy fallback."""
         log.info(
             "agent.run_start",
             session_id=self.session_id,
@@ -143,7 +121,157 @@ class AgentRunner:
             has_cookies=cookies is not None,
         )
 
-        # Task string oluştur
+        if settings.AGENT_RUNTIME_MODE == "custom":
+            try:
+                return await self._run_custom_runtime(
+                    course_name=course_name,
+                    dys_url=dys_url,
+                    username=username,
+                    password=password,
+                    end_time=end_time,
+                    direct_url=direct_url,
+                    dys_search_hint=dys_search_hint,
+                    cookies=cookies,
+                    mfa_code=mfa_code,
+                )
+            except Exception:
+                if not settings.AGENT_ENABLE_LEGACY_FALLBACK:
+                    raise
+                log.warning(
+                    "agent.custom_runtime_failed_falling_back",
+                    session_id=self.session_id,
+                    user_id=self.user_id,
+                    exc_info=True,
+                )
+
+        return await self._run_legacy(
+            course_name=course_name,
+            dys_url=dys_url,
+            username=username,
+            password=password,
+            end_time=end_time,
+            direct_url=direct_url,
+            dys_search_hint=dys_search_hint,
+            cookies=cookies,
+            mfa_code=mfa_code,
+        )
+
+    async def _run_custom_runtime(
+        self,
+        *,
+        course_name: str,
+        dys_url: str | None,
+        username: str | None,
+        password: str | None,
+        end_time: str,
+        direct_url: str | None,
+        dys_search_hint: str | None,
+        cookies: list[dict] | None,
+        mfa_code: str | None,
+    ) -> dict:
+        headless = bool(getattr(settings, "BROWSER_HEADLESS", True)) or not bool(os.environ.get("DISPLAY"))
+        browser_service = BrowserControlService()
+        planner = RuntimePlanner(call_llm)
+        runtime_ipc = RuntimeIPC(self.redis) if self.redis else None
+        runtime = RuntimeEngine(
+            session_id=self.session_id,
+            user_id=self.user_id,
+            browser_service=browser_service,
+            planner=planner,
+            notifier=self.notifier,
+            session_repo=self.session_repo,
+            runtime_ipc=runtime_ipc,
+        )
+
+        target_url = direct_url or dys_url
+        if not target_url:
+            raise AgentJoinFailed("Dys URL or direct URL is required.")
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=headless)
+            context = await browser.new_context()
+            if cookies:
+                try:
+                    await context.add_cookies(cookies)
+                except Exception:
+                    log.warning("agent.custom_runtime_cookie_load_failed", session_id=self.session_id, exc_info=True)
+            page = await context.new_page()
+            await page.goto(target_url)
+
+            browser_session = BrowserSession(
+                session_id=self.session_id,
+                page=page,
+                context=context,
+                browser=browser,
+            )
+            await runtime.attach(browser_session)
+
+            if self.session_repo:
+                await self.session_repo.update_metadata(
+                    self.session_id,
+                    {
+                        "runtime_mode": "custom",
+                        "runtime_goal": {
+                            "course_name": course_name,
+                            "target_url": target_url,
+                            "dys_search_hint": dys_search_hint,
+                            "has_credentials": bool(username and password),
+                            "has_mfa_code": bool(mfa_code),
+                        },
+                    },
+                )
+
+            try:
+                result = await runtime.run_goal(
+                    RuntimeGoal(
+                        mode="join_lesson",
+                        instruction=(
+                            f"Join the {course_name} lesson safely. "
+                            f"Search for {dys_search_hint or course_name} if the page is a DYS dashboard. "
+                            f"Keep microphone and camera off. Stay until {end_time}."
+                        ),
+                        course_name=course_name,
+                        end_time=end_time,
+                        metadata={
+                            "dys_url": dys_url,
+                            "direct_url": direct_url,
+                            "username": username or "",
+                            "password": password or "",
+                            "mfa_code": mfa_code or "",
+                        },
+                    )
+                )
+            finally:
+                if self.session_repo:
+                    latest_snapshot = runtime.state_store.latest_snapshot
+                    await self.session_repo.update_metadata(
+                        self.session_id,
+                        {
+                            "runtime_last_snapshot": latest_snapshot.model_dump(mode="json") if latest_snapshot else None,
+                            "runtime_decision_log": runtime.state_store.decision_log[-20:],
+                        },
+                    )
+                await runtime.detach()
+                await context.close()
+                await browser.close()
+
+        return result
+
+    async def _run_legacy(
+        self,
+        *,
+        course_name: str,
+        dys_url: str | None,
+        username: str | None,
+        password: str | None,
+        end_time: str,
+        direct_url: str | None,
+        dys_search_hint: str | None,
+        cookies: list[dict] | None,
+        mfa_code: str | None,
+    ) -> dict:
+        from browser_use import Agent
+
         if direct_url:
             task = build_direct_url_task(course_name, direct_url, end_time, mfa_code=mfa_code)
         elif cookies:
@@ -161,7 +289,6 @@ class AgentRunner:
                 mfa_code=mfa_code,
             )
 
-        # Checkpoint handler
         checkpoint_handler = CheckpointHandler(
             session_id=self.session_id,
             user_id=self.user_id,
@@ -169,29 +296,23 @@ class AgentRunner:
             session_repo=self.session_repo,
         )
 
-        # Canlı rapor: derse girildikten sonra periyodik screenshot
         last_live_report_at = 0.0
-        live_report_interval_s = 180  # varsayılan: 3 dakika
+        live_report_interval_s = 180
 
-        # MFA handler
-        mfa_handler = None
         if self.redis:
-            mfa_handler = MFAHandler(
+            MFAHandler(
                 user_id=self.user_id,
                 redis_client=self.redis,
                 notifier=self.notifier,
             )
 
-        # LLM oluştur
         llm = self._create_llm()
 
-        # browser-use Agent oluştur
         async def _on_step(step_info: dict) -> None:
-            # Kullanıcı iptali varsa hızlı çık
             if self.redis:
                 cancel_key = f"{REDIS_PREFIX_CANCEL}{self.user_id}"
                 if await self.redis.get(cancel_key):
-                    raise AgentCancelled("Kullanıcı iptal etti")
+                    raise AgentCancelled("User cancelled")
             await checkpoint_handler.handle_step(step_info)
 
             nonlocal last_live_report_at
@@ -205,26 +326,13 @@ class AgentRunner:
                     try:
                         await checkpoint_handler.send_manual_screenshot(
                             screenshot_bytes=screenshot_bytes,
-                            caption="📍 Şu an dersteyim. Kısa durum raporu.",
+                            caption="Su anda dersteyim. Kisa durum raporu.",
                         )
                         last_live_report_at = now
                     except Exception:
-                        # Canlı rapor başarısız olsa da agent devam etmeli
                         pass
 
-        # browser-use sürümleri arasında init signature farkları olabiliyor.
-        # Ayrıca Docker ortamında X server olmadığı için (headed) browser başlatmak patlar.
-        # Bu yüzden headless ayarını desteklenen isimlerle best-effort geçiyoruz.
-        # DISPLAY yoksa headed browser kesin patlar; bu durumda config ne olursa olsun headless'a zorla.
         headless = bool(getattr(settings, "BROWSER_HEADLESS", True)) or not bool(os.environ.get("DISPLAY"))
-        log.info(
-            "agent.browser_mode",
-            session_id=self.session_id,
-            user_id=self.user_id,
-            configured_headless=bool(getattr(settings, "BROWSER_HEADLESS", True)),
-            display_available=bool(os.environ.get("DISPLAY")),
-            effective_headless=headless,
-        )
         agent = None
         init_errors: list[str] = []
         on_step_supported = False
@@ -243,8 +351,8 @@ class AgentRunner:
                 agent = Agent(**kwargs)
                 on_step_supported = "on_step" in kwargs
                 break
-            except TypeError as e:
-                init_errors.append(str(e))
+            except TypeError as exc:
+                init_errors.append(str(exc))
                 continue
 
         if agent is None:
@@ -255,99 +363,63 @@ class AgentRunner:
                 headless=headless,
                 errors=init_errors[-3:],
             )
-            raise AgentJoinFailed(
-                "Tarayıcı/agent başlatılamadı. Sunucuda headless browser çalıştığından emin ol."
-            )
+            raise AgentJoinFailed("Browser or legacy agent could not be started.")
 
         if not on_step_supported:
             log.warning("agent.on_step_not_supported", session_id=self.session_id)
 
         try:
-            # Timeout ile çalıştır
             timeout = settings.AGENT_TIMEOUT_SECONDS or AGENT_TIMEOUT_SECONDS
-
-            result = await asyncio.wait_for(
-                agent.run(),
-                timeout=timeout,
-            )
-
-            # Sonucu parse et
+            result = await asyncio.wait_for(agent.run(), timeout=timeout)
+            if self.session_repo:
+                await self.session_repo.update_metadata(self.session_id, {"runtime_mode": "legacy"})
             return self._parse_result(result)
-
-        except asyncio.TimeoutError:
-            raise AgentPageFrozen(f"Agent {timeout}sn içinde tamamlanamadı")
+        except asyncio.TimeoutError as exc:
+            raise AgentPageFrozen(f"Agent timed out after {timeout} seconds") from exc
         except AgentCancelled:
             return {"status": "cancelled"}
 
     def _parse_result(self, raw_result) -> dict:
-        """Agent sonucunu parse et ve hata kodlarını exception'a çevir."""
+        """Parse the legacy agent result."""
 
         def _has_empty_history(obj, depth: int = 0) -> bool:
             if depth > 4:
                 return False
-
             try:
                 all_results = getattr(obj, "all_results")
             except Exception:
                 all_results = None
-
             if all_results is not None:
                 try:
                     return len(all_results) == 0
                 except Exception:
-                    try:
-                        return not all_results
-                    except Exception:
-                        return False
-
+                    return not all_results
             if isinstance(obj, dict):
-                return any(_has_empty_history(v, depth + 1) for v in obj.values())
+                return any(_has_empty_history(value, depth + 1) for value in obj.values())
             if isinstance(obj, (list, tuple, set)):
-                return any(_has_empty_history(v, depth + 1) for v in obj)
+                return any(_has_empty_history(value, depth + 1) for value in obj)
             return False
 
         result_text = str(raw_result)
-
-        # Eğer Playwright çökmesi veya agent hatası sebebiyle hiç adım işlenmediyse empty history döner.
         if _has_empty_history(raw_result) or "AgentHistoryList(all_results=[]" in result_text:
-            raise AgentJoinFailed(
-                "Tarayıcı yüklenemedi veya Agent başlatılamadı. Lütfen sunucu loglarını kontrol edin."
-            )
+            raise AgentJoinFailed("Browser failed to initialize or no actions were executed.")
 
         error_map = {
-            f"HATA_KODU: {ERROR_DYS_LOGIN_FAILED}": AgentLoginFailed("DYS giriş başarısız"),
-            f"HATA_KODU: {ERROR_LINK_NOT_FOUND}": AgentLinkNotFound("Ders linki DYS'de bulunamadı"),
-            f"HATA_KODU: {ERROR_MFA_REQUIRED}": AgentMFARequired("sms", "MFA doğrulaması gerekiyor"),
-            f"HATA_KODU: {ERROR_JOIN_FAILED}": AgentJoinFailed("Derse katılım başarısız"),
-            f"HATA_KODU: {ERROR_PAGE_FROZEN}": AgentPageFrozen("Sayfa dondu"),
-            "HATA_KODU: COOKIE_EXPIRED": CookieExpired("Session cookie süresi dolmuş"),
-            "HATA_KODU: MEETING_NOT_STARTED": MeetingNotStarted("Toplantı henüz başlatılmamış"),
+            f"HATA_KODU: {ERROR_DYS_LOGIN_FAILED}": AgentLoginFailed("DYS login failed"),
+            f"HATA_KODU: {ERROR_LINK_NOT_FOUND}": AgentLinkNotFound("Meeting link not found"),
+            f"HATA_KODU: {ERROR_MFA_REQUIRED}": AgentMFARequired("sms", "MFA required"),
+            f"HATA_KODU: {ERROR_JOIN_FAILED}": AgentJoinFailed("Failed to join the lesson"),
+            f"HATA_KODU: {ERROR_PAGE_FROZEN}": AgentPageFrozen("Page frozen"),
+            "HATA_KODU: COOKIE_EXPIRED": CookieExpired("Saved session cookie expired"),
+            "HATA_KODU: MEETING_NOT_STARTED": MeetingNotStarted("Meeting has not started yet"),
         }
-
         for code, exception in error_map.items():
             if code in result_text:
                 raise exception
-
         return {"status": "completed", "raw": result_text}
 
-    async def run_with_retry(
-        self,
-        max_retry: int | None = None,
-        **kwargs,
-    ) -> dict:
-        """
-        Retry logic ile agent çalıştır.
-
-        Args:
-            max_retry: Maksimum retry sayısı (default: config'den)
-            **kwargs: run() metodunun parametreleri
-
-        Returns:
-            Başarılı sonuç dict
-
-        Raises:
-            AgentMaxRetryExceeded: Tüm retry'lar başarısız olduğunda
-        """
+    async def run_with_retry(self, max_retry: int | None = None, **kwargs) -> dict:
+        """Run the agent with retry logic."""
         max_retry = max_retry or settings.AGENT_MAX_RETRY or AGENT_MAX_RETRY
         last_error: Exception | None = None
 
@@ -359,77 +431,45 @@ class AgentRunner:
                     attempt=attempt,
                     max_retry=max_retry,
                 )
-
-                # İptal kontrolü
                 if self.redis:
                     cancel_key = f"{REDIS_PREFIX_CANCEL}{self.user_id}"
-                    is_cancelled = await self.redis.get(cancel_key)
-                    if is_cancelled:
+                    if await self.redis.get(cancel_key):
                         log.info("agent.cancelled_by_user", session_id=self.session_id)
                         return {"status": "cancelled"}
-
-                result = await self.run(**kwargs)
-                return result
-
+                return await self.run(**kwargs)
             except AgentMFARequired:
-                # MFA retry'lanmaz, kullanıcı müdahalesi gerekir
                 raise
             except AgentCancelled:
                 log.info("agent.cancelled_by_user", session_id=self.session_id)
                 return {"status": "cancelled"}
-
-            except (AgentLoginFailed, AgentLinkNotFound) as e:
-                # Bu hatalar retry'lansa da muhtemelen aynı sonucu verir
-                last_error = e
-                log.warning(
-                    "agent.non_retryable_error",
-                    session_id=self.session_id,
-                    error=str(e),
-                    attempt=attempt,
-                )
+            except (AgentLoginFailed, AgentLinkNotFound) as exc:
+                last_error = exc
+                log.warning("agent.non_retryable_error", session_id=self.session_id, error=str(exc), attempt=attempt)
                 raise
-
-            except (AgentPageFrozen, AgentJoinFailed, MeetingNotStarted) as e:
-                last_error = e
-                log.warning(
-                    "agent.retryable_error",
-                    session_id=self.session_id,
-                    error=str(e),
-                    attempt=attempt,
-                )
-
+            except (AgentPageFrozen, AgentJoinFailed, MeetingNotStarted) as exc:
+                last_error = exc
+                log.warning("agent.retryable_error", session_id=self.session_id, error=str(exc), attempt=attempt)
                 if attempt < max_retry:
-                    # Bildirim gönder
                     if self.notifier:
                         await self.notifier.send_error(
                             user_id=self.user_id,
                             error_code="RETRY",
-                            details=f"⚠️ Yeniden bağlanılıyor ({attempt}/{max_retry})...",
+                            details=f"Yeniden baglaniliyor ({attempt}/{max_retry})...",
                         )
-
-                    # Retry session repo güncelle
                     if self.session_repo:
                         await self.session_repo.increment_retry(self.session_id)
-
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
                 else:
                     break
-
-            except Exception as e:
-                last_error = e
-                log.error(
-                    "agent.unexpected_error",
-                    session_id=self.session_id,
-                    error=str(e),
-                    attempt=attempt,
-                )
+            except Exception as exc:
+                last_error = exc
+                log.error("agent.unexpected_error", session_id=self.session_id, error=str(exc), attempt=attempt)
                 if attempt < max_retry:
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
                 else:
                     break
 
-        # Tüm retry'lar başarısız
         raise AgentMaxRetryExceeded(
             retry_count=max_retry,
-            message=f"Tüm denemeler başarısız: {last_error}",
+            message=f"All attempts failed: {last_error}",
         )

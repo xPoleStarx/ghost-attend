@@ -1,24 +1,22 @@
-"""
-GhostAttend — Session Handler (DB-Based)
+"""GhostAttend session handlers."""
 
-Aktif oturum yönetimi: /status, /cancel komutları.
-DB'den ders bilgisini çeker, scheduler bağımsız çalışır.
-"""
+from __future__ import annotations
 
 import redis.asyncio as aioredis
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
-from src.core.constants import DAYS_TR, REDIS_PREFIX_CANCEL
+from src.core.constants import DAYS_TR
 from src.core.logging import get_logger
-from src.bot.utils.safe_text import escape_dynamic_text
 
 log = get_logger(__name__)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/status — Aktif oturumu ve zamanlanmış dersleri göster (DB-based)."""
+    """/status - show scheduled lessons and recent runtime/session summary."""
     user = update.effective_user
+    if user is None or update.message is None:
+        return
     log.info("bot.status", user_id=user.id)
 
     from zoneinfo import ZoneInfo
@@ -29,8 +27,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from src.db.repositories.user import UserRepository
     from src.scheduler.lesson_scheduler import get_user_jobs
 
-    recent_sessions = []
     user_tz = "Europe/Istanbul"
+    courses = []
+    recent_sessions = []
     try:
         async with get_session() as session:
             user_repo = UserRepository(session)
@@ -43,100 +42,83 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             session_repo = SessionRepository(session)
             recent_sessions = await session_repo.get_recent_sessions(user.id, limit=1)
-    except Exception as e:
-        log.error("bot.status_db_error", user_id=user.id, error=str(e))
-        courses = []
+    except Exception as exc:
+        log.error("bot.status_db_error", user_id=user.id, error=str(exc))
 
     if not courses:
         await update.message.reply_text(
-            "📊 **Oturum Durumu**\n\n"
-            "Zamanlanmış ders yok.\n"
-            "/upload\\_schedule ile ders programını yükle.",
+            "Oturum Durumu\n\nZamanlanmis ders yok.\n/upload_schedule ile ders programini yukle."
         )
         return
 
-    # day_of_week (int) → Türkçe gün adı
-    day_names = {v: k for k, v in DAYS_TR.items()}
-
-    lines = ["📊 **Zamanlanmış Dersler**\n"]
-    for c in courses:
-        if c.is_online is True:
-            online_badge = "🟢 Online"
-        elif c.is_online is False:
-            online_badge = "🔴 Yüz yüze"
+    day_names = {value: key for key, value in DAYS_TR.items()}
+    lines = ["Zamanlanmis Dersler", ""]
+    for course in courses:
+        if course.is_online is True:
+            online_badge = "Online"
+        elif course.is_online is False:
+            online_badge = "Yuz yuze"
         else:
-            online_badge = "❓ Belirsiz"
-
-        safe_name = escape_dynamic_text(c.name, parse_mode="Markdown")
+            online_badge = "Belirsiz"
         lines.append(
-            f"📚 **{safe_name}**\n"
-            f"   📅 {day_names.get(c.day_of_week, '?')} "
-            f"{c.start_time.strftime('%H:%M')}–{c.end_time.strftime('%H:%M')}\n"
-            f"   {online_badge}"
+            f"- {course.name}\n"
+            f"  {day_names.get(course.day_of_week, '?')} {course.start_time.strftime('%H:%M')}-{course.end_time.strftime('%H:%M')}\n"
+            f"  {online_badge}"
         )
 
-    # Scheduler job'ları (APScheduler Redis jobstore)
     try:
         jobs = get_user_jobs(user.id)
-    except Exception as e:
-        log.warning("bot.status_job_list_failed", user_id=user.id, error=str(e))
+    except Exception as exc:
+        log.warning("bot.status_job_list_failed", user_id=user.id, error=str(exc))
         jobs = []
 
+    lines.append("")
+    lines.append("Zamanlayici Job'lari")
     if jobs:
-        lines.append("\n⏱️ **Zamanlayıcı Job'ları**")
-        for j in jobs:
-            job_name = escape_dynamic_text(str(j.get("name") or ""), parse_mode="Markdown")
-            next_run_dt = j.get("next_run")
-            job_type = j.get("job_type")
-
+        for job in jobs:
+            next_run_dt = job.get("next_run")
             if next_run_dt:
                 try:
-                    next_local = next_run_dt.astimezone(ZoneInfo(user_tz))
-                    next_run = next_local.strftime("%Y-%m-%d %H:%M %Z")
+                    next_run = next_run_dt.astimezone(ZoneInfo(user_tz)).strftime("%Y-%m-%d %H:%M %Z")
                 except Exception:
                     next_run = str(next_run_dt)
             else:
                 next_run = "yok"
-
-            safe_next_run = escape_dynamic_text(next_run, parse_mode="Markdown")
-            if job_type:
-                safe_job_type = escape_dynamic_text(str(job_type), parse_mode="Markdown")
-                lines.append(f"- {job_name}\n  `next_run`: `{safe_next_run}`\n  `type`: `{safe_job_type}`")
-            else:
-                lines.append(f"- {job_name}\n  `next_run`: `{safe_next_run}`")
+            lines.append(f"- {job.get('name') or 'isimsiz'}")
+            lines.append(f"  next_run: {next_run}")
+            if job.get("job_type"):
+                lines.append(f"  type: {job['job_type']}")
     else:
-        lines.append(
-            "\n⏱️ **Zamanlayıcı Job'ları**\n"
-            "- (Bu kullanıcı için job bulunamadı)\n\n"
-            "Olası nedenler:\n"
-            "- Scheduler container çalışmıyor olabilir.\n"
-            "- Redis ayarları tutarsız olabilir (bot/scheduler farklı Redis'e bakıyor).\n"
-            "- Bu dersler online değilse (yüz yüze) job üretilmez.\n"
-            "- Kullanıcının DYS URL'i yoksa (ve direct_url yoksa) job atlanır.\n\n"
-            "Kontrol:\n"
-            "- `/health` ile scheduler heartbeat'e bak.\n"
-            "- /upload\\_schedule sonrası tekrar `/status` dene."
-        )
+        lines.append("- Bu kullanici icin job bulunamadi")
 
-    # Son oturum özeti (varsa)
     if recent_sessions:
         last = recent_sessions[0]
-        status = last.status
-        reason = last.failure_reason or "-"
-        lines.append(
-            "\n🧾 **Son Oturum Özeti**\n"
-            f"- status: `{status}`\n"
-            f"- failure_reason: `{reason}`"
-        )
+        metadata = getattr(last, "metadata_", None) or {}
+        runtime_session = metadata.get("runtime_session") or {}
+        latest_snapshot = runtime_session.get("latest_snapshot") or {}
+        lines.append("")
+        lines.append("Son Oturum Ozeti")
+        lines.append(f"- status: {last.status}")
+        lines.append(f"- failure_reason: {last.failure_reason or '-'}")
+        if runtime_session:
+            lines.append(f"- runtime_mode: {runtime_session.get('runtime_mode') or metadata.get('runtime_mode') or '-'}")
+            lines.append(f"- runtime_state: {runtime_session.get('fsm_state') or '-'}")
+            lines.append(f"- last_tool: {runtime_session.get('last_tool') or '-'}")
+            lines.append(f"- last_error: {runtime_session.get('last_error') or '-'}")
+            if latest_snapshot:
+                lines.append(f"- snapshot_title: {latest_snapshot.get('title') or '-'}")
+                lines.append(f"- snapshot_url: {latest_snapshot.get('url') or '-'}")
 
-    lines.append(f"\nToplam: {len(courses)} ders (DB) · {len(jobs)} job (scheduler)")
-    # Markdown parse hataları (özellikle backtick/escape edge-case'leri) yerine plain text gönder.
+    lines.append("")
+    lines.append(f"Toplam: {len(courses)} ders (DB) · {len(jobs)} job (scheduler)")
     await update.message.reply_text("\n".join(lines))
 
 
 async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/cancel — Bu kullanıcının aktif oturumunu ve tüm verilerini temizle."""
+    """/cancel - cancel active session and clear user state."""
     user = update.effective_user
+    if user is None or update.message is None:
+        return
     log.info("bot.cancel_session", user_id=user.id)
 
     redis_client: aioredis.Redis | None = context.bot_data.get("redis")
@@ -147,67 +129,61 @@ async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_T
     from src.scheduler.lesson_scheduler import unschedule_all_for_user
 
     async with get_session() as session:
-        # 1) Runtime oturumunu iptal et + Redis temizliği
         cancel_result = await cancel_user_session(
             user_id=user.id,
             redis_client=redis_client,
             db_session=session,
         )
-
-        # 2) Kullanıcının tüm zamanlanmış job'larını kaldır
         removed = await unschedule_all_for_user(user.id)
         log.info("bot.cancel_unschedule_done", user_id=user.id, removed_jobs=removed)
 
-        # 3) Kullanıcının veritabanındaki tüm verilerini sil
         repo = UserRepository(session)
         await repo.delete_user_and_related(user.id)
-
         await session.commit()
 
-    # PTB tarafı: conversation state'lerini de temizle
     context.user_data.clear()
-
     await update.message.reply_text(
-        "⏹️ İptal alındı.\n"
-        "Bu kullanıcıya ait tüm dersler, oturumlar, bildirimler ve kimlik bilgileri veritabanından silindi.\n\n"
-        f"Temizlik özeti:\n"
+        "Iptal alindi.\n"
+        "Bu kullaniciya ait tum dersler, oturumlar, bildirimler ve kimlik bilgileri veritabanindan silindi.\n\n"
+        f"Temizlik ozeti:\n"
         f"- scheduler_job_removed: {removed}\n"
         f"- cancel_flag_set: {bool(cancel_result.get('cancel_flag_set'))}\n"
         f"- redis_deleted: {int(cancel_result.get('redis_deleted') or 0)}\n"
         f"- db_session_cancelled: {bool(cancel_result.get('db_cancelled'))}\n\n"
-        "Tekrar başlamak için /start yazabilirsin."
+        "Tekrar baslamak icin /start yazabilirsin."
     )
 
 
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/health — Bot/Redis/Scheduler heartbeat özetini göster."""
+    """/health - show bot and scheduler heartbeat summary."""
     user = update.effective_user
-    redis_client: aioredis.Redis | None = context.bot_data.get("redis")
+    if user is None or update.message is None:
+        return
 
+    redis_client: aioredis.Redis | None = context.bot_data.get("redis")
     scheduler_alive = "bilinmiyor"
     if redis_client:
         try:
-            val = await redis_client.get("scheduler:heartbeat")
-            scheduler_alive = "evet" if val else "hayır"
-        except Exception as e:
-            log.warning("bot.health_redis_failed", user_id=user.id, error=str(e))
+            value = await redis_client.get("scheduler:heartbeat")
+            scheduler_alive = "evet" if value else "hayir"
+        except Exception as exc:
+            log.warning("bot.health_redis_failed", user_id=user.id, error=str(exc))
             scheduler_alive = "hata"
     else:
         scheduler_alive = "redis_yok"
 
     await update.message.reply_text(
-        "🩺 **Sağlık Durumu**\n\n"
-        f"- redis_client: `{'var' if redis_client else 'yok'}`\n"
-        f"- scheduler_heartbeat: `{scheduler_alive}`\n\n"
+        "Saglik Durumu\n\n"
+        f"- redis_client: {'var' if redis_client else 'yok'}\n"
+        f"- scheduler_heartbeat: {scheduler_alive}\n\n"
         "Notlar:\n"
-        "- heartbeat `hayır` ise scheduler container çalışmıyor olabilir veya Redis bağlantısı farklı olabilir.\n"
-        "- heartbeat `evet` ama job yoksa, dersler online olmayabilir veya DYS URL eksik olabilir.\n",
-        parse_mode="Markdown",
+        "- heartbeat hayir ise scheduler container calismiyor olabilir veya Redis baglantisi farkli olabilir.\n"
+        "- heartbeat evet ama job yoksa, dersler online olmayabilir veya DYS URL eksik olabilir.\n"
     )
 
 
 def get_session_handlers() -> list[CommandHandler]:
-    """Session ile ilgili handler'ları döndür."""
+    """Return command handlers related to session management."""
     return [
         CommandHandler("status", status_command),
         CommandHandler("cancel", cancel_session_command),

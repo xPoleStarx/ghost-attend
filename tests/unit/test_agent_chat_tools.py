@@ -1,48 +1,42 @@
-"""
-GhostAttend — Agent Chat Tool Tests
-
-Yeni agentic chat tool'ları için unit seviyesinde davranış testleri.
-"""
-
 from datetime import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
 from src.bot.handlers.agent_chat import _compute_next_lesson
+from src.conversation.policy import decide_policy
+from src.conversation.tools import ConversationToolRegistry
 
 
 class DummyCourse:
-    """_compute_next_lesson için basit ders modeli."""
-
-    def __init__(self, name: str, day_of_week: int, start_time: time, end_time: time):
+    def __init__(self, course_id: str, name: str, start_time: time, end_time: time):
+        self.id = course_id
         self.name = name
-        self.day_of_week = day_of_week
+        self.day_of_week = 0
         self.start_time = start_time
         self.end_time = end_time
+        self.direct_url = "https://example.com/live"
+        self.dys_search_hint = None
+        self.platform = "teams"
+        self.is_online = True
+        self.is_active = True
 
 
 def test_compute_next_lesson_selects_closest_future(monkeypatch):
-    """_compute_next_lesson şu andan sonraki en yakın dersi seçmeli."""
-    # Pazartesi 10:00 olarak sabitle
-    fake_now = SimpleNamespace(hour=10, minute=0, weekday=lambda: 0)
+    fake_now = SimpleNamespace(hour=10, minute=0, weekday=lambda: 0, astimezone=lambda tz: fake_now)
 
     class FakeDateTime:
         @staticmethod
-        def now():
+        def now(*args, **kwargs):
             return fake_now
-
-        @staticmethod
-        def weekday():
-            return fake_now.weekday()
 
     monkeypatch.setattr("src.bot.handlers.agent_chat.datetime", FakeDateTime)
 
     courses = [
-        DummyCourse("Ders1", day_of_week=0, start_time=time(9, 0), end_time=time(10, 0)),   # Geçmiş (aynı gün)
-        DummyCourse("Ders2", day_of_week=0, start_time=time(11, 0), end_time=time(12, 0)),  # Aynı gün, ileride
-        DummyCourse("Ders3", day_of_week=2, start_time=time(9, 0), end_time=time(10, 0)),   # Daha uzak
+        DummyCourse("1", "Ders1", time(9, 0), time(10, 0)),
+        DummyCourse("2", "Ders2", time(11, 0), time(12, 0)),
+        DummyCourse("3", "Ders3", time(13, 0), time(14, 0)),
     ]
 
     next_course = _compute_next_lesson(courses)
@@ -51,95 +45,253 @@ def test_compute_next_lesson_selects_closest_future(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_chat_get_next_lesson_tool_flow(monkeypatch):
-    """
-    "en yakın ders hangi ders" benzeri bir istek geldiğinde
-    LLM'den get_next_lesson tool'unu seçen bir JSON döndüğünde,
-    handler'ın anlamlı bir yanıt üretip hata vermemesi gerekir.
-    """
-    from src.bot.handlers import agent_chat
+async def test_session_start_tool_dispatches_attend_task():
+    course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama", time(10, 0), time(11, 0))
 
-    fake_json = {
-        "action": "tool",
-        "tool": "get_next_lesson",
-        "args": {},
-        "message": "En yakın dersi söylüyorum.",
+    class FakeCourseRepo:
+        async def find_by_name(self, user_id: int, query: str, active_only: bool = True, limit: int = 5):
+            return [course]
+
+    class FakeCredRepo:
+        async def get_dys_url_for_user(self, user_id: int):
+            return "https://dys.example.com"
+
+    class FakeSessionRepo:
+        async def get_active_session(self, user_id: int):
+            return None
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeTask:
+        def __init__(self):
+            self.calls = []
+
+        def delay(self, **kwargs):
+            self.calls.append(kwargs)
+
+    fake_task = FakeTask()
+    registry = ConversationToolRegistry(
+        user_id=123,
+        session=FakeSession(),
+        course_repo=FakeCourseRepo(),
+        credential_repo=FakeCredRepo(),
+        session_repo=FakeSessionRepo(),
+        attend_task=fake_task,
+    )
+
+    result = await registry.execute(
+        "session.start",
+        {"course_name_query": "Kariyer Planlama"},
+        {"message_text": "Kariyer Planlama dersine simdi katil", "courses": [course]},
+    )
+
+    assert result.ok is True
+    assert fake_task.calls
+    assert fake_task.calls[0]["course_id"] == course.id
+    assert fake_task.calls[0]["start_time"] == "10:00"
+
+
+@pytest.mark.asyncio
+async def test_courses_update_uses_single_course_and_preserves_duration():
+    course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama", time(18, 0), time(18, 45))
+
+    class FakeCourseRepo:
+        def __init__(self):
+            self.updated = None
+            self.direct_url = None
+
+        async def get_by_id(self, course_id: UUID):
+            assert str(course_id) == course.id
+            return course
+
+        async def find_by_name(self, user_id: int, query: str, active_only: bool = True, limit: int = 5):
+            return []
+
+        async def update_schedule(self, course_id, **values):
+            self.updated = (course_id, values)
+
+        async def update_direct_url(self, course_id, url: str):
+            self.direct_url = (course_id, url)
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    called = []
+
+    async def fake_schedule_all(user_id: int):
+        called.append(user_id)
+
+    state = {"last_referenced_course_id": course.id, "last_schedule_intent": "course_update"}
+    repo = FakeCourseRepo()
+    registry = ConversationToolRegistry(
+        user_id=123,
+        session=FakeSession(),
+        course_repo=repo,
+        credential_repo=object(),
+        session_repo=object(),
+        schedule_all_courses=fake_schedule_all,
+    )
+
+    result = await registry.execute(
+        "courses.update",
+        {"raw_text": "dersin saatini 18.12 yap"},
+        {"message_text": "dersin saatini 18.12 yap", "courses": [course], "conversation_state": state},
+    )
+
+    assert result.ok is True
+    assert repo.updated is not None
+    _, updated_values = repo.updated
+    assert updated_values["start_time"] == time(18, 12)
+    assert updated_values["end_time"] == time(18, 57)
+    assert called == [123]
+    assert state["last_referenced_course_name"] == "Kariyer Planlama"
+
+
+@pytest.mark.asyncio
+async def test_courses_update_prefers_conversation_memory_when_query_missing():
+    course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama", time(18, 0), time(18, 45))
+
+    class FakeCourseRepo:
+        def __init__(self):
+            self.updated = None
+
+        async def get_by_id(self, course_id: UUID):
+            return course if str(course_id) == course.id else None
+
+        async def find_by_name(self, user_id: int, query: str, active_only: bool = True, limit: int = 5):
+            return []
+
+        async def update_schedule(self, course_id, **values):
+            self.updated = (course_id, values)
+
+        async def update_direct_url(self, course_id, url: str):
+            raise AssertionError("direct url should not be updated")
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    state = {
+        "last_referenced_course_id": course.id,
+        "last_referenced_course_name": course.name,
+        "last_schedule_intent": "course_update",
     }
-
-    # LLM çağrısını stub'la
-    monkeypatch.setattr(
-        agent_chat,
-        "_call_llm",
-        AsyncMock(return_value='```json\n' + __import__("json").dumps(fake_json) + "\n```"),
+    repo = FakeCourseRepo()
+    registry = ConversationToolRegistry(
+        user_id=123,
+        session=FakeSession(),
+        course_repo=repo,
+        credential_repo=object(),
+        session_repo=object(),
     )
 
-    # Dummy course
-    dummy_course = DummyCourse(
-        "Kariyer Planlama",
-        day_of_week=0,
-        start_time=time(22, 22),
-        end_time=time(23, 0),
+    result = await registry.execute(
+        "courses.update",
+        {"raw_text": "çarşambaya al"},
+        {"message_text": "çarşambaya al", "courses": [course], "conversation_state": state},
     )
 
-    # DB repository'lerini stub'la
-    fake_session = MagicMock()
-    monkeypatch.setattr(
-        "src.bot.handlers.agent_chat.get_session",
-        lambda: AsyncMock().__aenter__.return_value.__aenter__.return_value,
-        raising=False,
+    assert result.ok is True
+    assert repo.updated[1]["day_of_week"] == 2
+
+
+@pytest.mark.asyncio
+async def test_session_ask_runtime_sends_screenshot(monkeypatch):
+    class FakeNotifier:
+        def __init__(self):
+            self.calls = []
+
+        async def send_screenshot(self, **kwargs):
+            self.calls.append(kwargs)
+            return True
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeSessionRepo:
+        async def get_active_session(self, user_id: int):
+            return SimpleNamespace(id="session-1", status="running")
+
+    class FakeRuntimeIPC:
+        def encode_bytes(self, value: bytes | None):
+            return "ZmFrZS1pbWFnZQ==" if value else None
+
+        def decode_bytes(self, value: str):
+            assert value == "ZmFrZS1pbWFnZQ=="
+            return b"fake-image"
+
+        async def get_session(self, session_id: str):
+            return SimpleNamespace(session_id=session_id, status="running")
+
+        async def send_command(self, session_id: str, command_type: str, payload: dict):
+            assert command_type == "take_screenshot"
+            return SimpleNamespace(command_id="cmd-1")
+
+        async def await_result(self, command_id: str):
+            return SimpleNamespace(
+                ok=True,
+                payload={
+                    "answer": "Guncel ekran goruntusunu gonderiyorum.",
+                    "details": {"snapshot_id": "snap-1"},
+                    "screenshot_b64": "ZmFrZS1pbWFnZQ==",
+                },
+                error=None,
+            )
+
+    notifier = FakeNotifier()
+    registry = ConversationToolRegistry(
+        user_id=123,
+        session=FakeSession(),
+        course_repo=object(),
+        credential_repo=object(),
+        session_repo=FakeSessionRepo(),
+        notifier=notifier,
+        runtime_ipc=FakeRuntimeIPC(),
     )
 
-    # update / context objeleri için basit stub
-    sent_messages = []
-
-    class FakeMessage:
-        text = "en yakın ders hangi ders"
-
-        async def reply_text(self, text, parse_mode=None):
-            sent_messages.append((text, parse_mode))
-
-        async def delete(self):
-            pass
-
-    class FakeChat:
-        id = 123
-
-    class FakeUpdate:
-        effective_user = SimpleNamespace(id=123)
-        effective_chat = FakeChat()
-        message = FakeMessage()
-
-    class FakeContext:
-        bot_data = {}
-        user_data = {}
-
-    # handle_agent_chat içindeki DB çağrılarını minimal stub'larla patch'lemek
-    async def fake_get_session():
-        class _Ctx:
-            async def __aenter__(self_inner):
-                return fake_session
-
-            async def __aexit__(self_inner, exc_type, exc, tb):
-                return False
-
-        return _Ctx()
-
-    monkeypatch.setattr("src.bot.handlers.agent_chat.get_session", fake_get_session, raising=False)
-
-    from src.db.repositories.course import CourseRepository
-
-    fake_repo = MagicMock(spec=CourseRepository)
-    fake_repo.get_user_courses = AsyncMock(return_value=[dummy_course])
-
-    monkeypatch.setattr(
-        "src.bot.handlers.agent_chat.CourseRepository",
-        lambda session: fake_repo,
-        raising=False,
+    result = await registry.execute(
+        "session.ask_runtime",
+        {"question": "take a screenshot and send it to me"},
+        {"message_text": "take a screenshot and send it to me"},
     )
 
-    await agent_chat.handle_agent_chat(FakeUpdate(), FakeContext())
+    assert result.ok is True
+    assert notifier.calls
+    assert notifier.calls[0]["caption"] == "Guncel ekran goruntusunu gonderiyorum."
 
-    # Mesaj gerçekten üretildi mi?
-    assert sent_messages, "Herhangi bir cevap üretilmedi."
-    assert "Kariyer Planlama" in sent_messages[0][0]
 
+def test_policy_routes_status_question_to_status_tool():
+    decision = decide_policy(
+        message_text="derse katilacak misin",
+        courses=[],
+        attachments=[],
+        conversation_state={},
+    )
+    assert decision.tool_name == "session.status"
+
+
+def test_policy_routes_explicit_join_to_start_tool():
+    decision = decide_policy(
+        message_text="Kariyer Planlama dersine katil simdi",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={},
+    )
+    assert decision.tool_name == "session.start"
+    assert decision.tool_args["course_name_query"] == "kariyer planlama"
+
+
+def test_policy_routes_single_course_time_change_to_courses_update():
+    decision = decide_policy(
+        message_text="dersin saatini 18.12 yap",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={"last_schedule_intent": "course_update"},
+    )
+
+    assert decision.tool_name == "courses.update"
+    assert decision.tool_args["start_time"] == "18:12"

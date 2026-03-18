@@ -75,3 +75,44 @@ def test_compute_next_lesson_picks_closest():
 
     next_course = _compute_next_lesson(courses)
     assert next_course in courses
+
+
+def test_policy_marks_followup_schedule_update_from_memory():
+    from src.conversation.policy import decide_policy
+
+    decision = decide_policy(
+        message_text="hayır ders saati 18.12",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={"last_schedule_intent": "course_update", "last_referenced_course_name": "Kariyer Planlama"},
+    )
+
+    assert decision.tool_name == "courses.update"
+    assert decision.tool_args["start_time"] == "18:12"
+
+
+def test_policy_marks_same_course_day_followup_from_memory():
+    from src.conversation.policy import decide_policy
+
+    decision = decide_policy(
+        message_text="onu çarşambaya al",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={"last_schedule_intent": "course_update", "last_referenced_course_name": "Kariyer Planlama"},
+    )
+
+    assert decision.tool_name == "courses.update"
+    assert decision.tool_args["day"] == "Çarşamba"
+
+
+def test_policy_keeps_batch_schedule_update_for_program_text():
+    from src.conversation.policy import decide_policy
+
+    decision = decide_policy(
+        message_text="yeni programi guncelle",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={},
+    )
+
+    assert decision.tool_name == "schedule.patch_from_text"

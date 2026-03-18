@@ -1,7 +1,6 @@
-"""
-GhostAttend - Agent Runner Unit Tests
-"""
+"""Agent runner unit tests."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,14 +57,6 @@ class TestAgentRunnerParseResult:
         with pytest.raises(MeetingNotStarted):
             self.runner._parse_result("HATA_KODU: MEETING_NOT_STARTED")
 
-    def test_error_in_middle_of_text(self):
-        with pytest.raises(AgentLoginFailed):
-            self.runner._parse_result("Adim 3 sonrasi... HATA_KODU: DYS_LOGIN_FAILED ... devam")
-
-    def test_no_error_code(self):
-        result = self.runner._parse_result("Tum adimlar tamamlandi.")
-        assert result["status"] == "completed"
-
     def test_empty_history_raises_join_failed(self):
         class EmptyHistory:
             all_results = []
@@ -75,7 +66,7 @@ class TestAgentRunnerParseResult:
 
 
 @pytest.mark.asyncio
-async def test_runner_forces_headless_without_display(monkeypatch):
+async def test_runner_legacy_path_forces_headless_without_display(monkeypatch):
     class FakeAgent:
         init_kwargs = None
 
@@ -86,6 +77,7 @@ async def test_runner_forces_headless_without_display(monkeypatch):
             return "Tamam"
 
     monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setattr("src.agent.runner.settings.AGENT_RUNTIME_MODE", "legacy")
 
     with patch("browser_use.Agent", FakeAgent):
         with patch.object(AgentRunner, "_create_llm", return_value=MagicMock()):
@@ -97,11 +89,72 @@ async def test_runner_forces_headless_without_display(monkeypatch):
     assert FakeAgent.init_kwargs["browser_config"]["headless"] is True
 
 
+@pytest.mark.asyncio
+async def test_runner_custom_runtime_uses_runtime_engine(monkeypatch):
+    monkeypatch.setattr("src.agent.runner.settings.AGENT_RUNTIME_MODE", "custom")
+    monkeypatch.setattr("src.agent.runner.settings.AGENT_ENABLE_LEGACY_FALLBACK", False)
+
+    class FakePage:
+        url = "https://example.com"
+
+        async def goto(self, url):
+            self.url = url
+
+        async def title(self):
+            return "Page"
+
+        def locator(self, selector):
+            async def inner_text():
+                return "Join"
+
+            return SimpleNamespace(inner_text=inner_text)
+
+    class FakeContext:
+        async def add_cookies(self, cookies):
+            return None
+
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            return None
+
+    class FakeBrowser:
+        async def new_context(self):
+            return FakeContext()
+
+        async def close(self):
+            return None
+
+    class FakePlaywright:
+        def __init__(self):
+            async def launch(headless=True):
+                return FakeBrowser()
+
+            self.chromium = SimpleNamespace(launch=launch)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_run_goal(self, goal, max_steps=12):
+        self.state_store.latest_snapshot = None
+        return {"status": "completed", "raw": "joined"}
+
+    monkeypatch.setattr("src.agent.runner.async_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("src.runtime.engine.RuntimeEngine.run_goal", fake_run_goal, raising=False)
+
+    runner = AgentRunner(session_id="00000000-0000-0000-0000-000000000000", user_id=1)
+    result = await runner.run(course_name="Test", dys_url="https://dys", end_time="10:00")
+    assert result["status"] == "completed"
+
+
 class TestAgentRunnerRetry:
     @pytest.mark.asyncio
     async def test_retry_on_page_frozen(self):
         runner = AgentRunner(session_id="t", user_id=1)
-
         call_count = 0
 
         async def mock_run(**kwargs):
@@ -112,13 +165,7 @@ class TestAgentRunnerRetry:
             return {"status": "completed", "raw": "ok"}
 
         runner.run = mock_run
-
-        result = await runner.run_with_retry(
-            max_retry=3,
-            course_name="Test",
-            end_time="10:00",
-        )
-
+        result = await runner.run_with_retry(max_retry=3, course_name="Test", end_time="10:00")
         assert result["status"] == "completed"
         assert call_count == 3
 

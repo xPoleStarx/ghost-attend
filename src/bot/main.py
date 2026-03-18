@@ -70,7 +70,7 @@ def create_application() -> Application:
     from telegram.ext import MessageHandler, filters
     app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^\d{4,8}$"),
+            (filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^\d{4,8}$")) | (filters.PHOTO & ~filters.COMMAND),
             handle_agent_chat,
         )
     )

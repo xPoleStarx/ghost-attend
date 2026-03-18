@@ -44,6 +44,11 @@ class Settings(BaseSettings):
 
     # ── Agent ──
     BROWSER_HEADLESS: bool = True
+    AGENT_RUNTIME_MODE: str = "legacy"  # custom | legacy
+    AGENT_ENABLE_LEGACY_FALLBACK: bool = True
+    BROWSER_CDP_URL: str = ""
+    RUNTIME_IPC_TIMEOUT_SECONDS: int = 15
+    RUNTIME_HEARTBEAT_TTL_SECONDS: int = 90
     AGENT_TIMEOUT_SECONDS: int = 3600
     AGENT_MAX_RETRY: int = 3
     MEETING_START_OFFSET_MINUTES: int = 5

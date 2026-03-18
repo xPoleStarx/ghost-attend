@@ -123,7 +123,7 @@ class NotificationService:
     ) -> bool:
         """Ders başlamadan önce hatırlatma gönder."""
         safe_course = escape_md(course_name, version=1)
-        time_line = f"Saat: {start_time}\n\n" if start_time else "\n"
+        time_line = f"Baslangic saati: {start_time}\n\n" if start_time else "\n"
         return await self.send_message(
             user_id=user_id,
             text=(

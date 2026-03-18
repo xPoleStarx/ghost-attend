@@ -20,6 +20,24 @@ def test_attend_lesson_task_returns_completed(monkeypatch):
     assert result["status"] == "completed"
 
 
+def test_attend_lesson_task_returns_completed_when_start_time_is_provided(monkeypatch):
+    monkeypatch.setattr(
+        "src.scheduler.tasks._run_async",
+        lambda coro: {"status": "completed", "raw": "ok"},
+    )
+
+    result = attend_lesson_task.run(
+        user_id=1,
+        course_id="11111111-1111-1111-1111-111111111111",
+        course_name="Test",
+        dys_url="https://dys",
+        start_time="18:33",
+        end_time="19:33",
+    )
+
+    assert result["status"] == "completed"
+
+
 def test_attend_lesson_task_returns_cancelled(monkeypatch):
     monkeypatch.setattr(
         "src.scheduler.tasks._run_async",

@@ -185,6 +185,7 @@ async def schedule_course(
             "course_id": course_id,
             "course_name": course_name,
             "dys_url": dys_url,
+            "start_time": start_time,
             "end_time": end_time,
             "direct_url": direct_url,
             "dys_search_hint": dys_search_hint,
@@ -212,6 +213,7 @@ async def _trigger_attend_lesson(
     course_name: str,
     dys_url: str,
     end_time: str,
+    start_time: str | None = None,
     direct_url: str | None = None,
     dys_search_hint: str | None = None,
 ):
@@ -226,7 +228,10 @@ async def _trigger_attend_lesson(
     log.info(
         "scheduler.triggering_task",
         user_id=user_id,
+        course_id=course_id,
         course=course_name,
+        start_time=start_time,
+        minutes_before=settings.MEETING_START_OFFSET_MINUTES,
     )
 
     # Ders başlamadan 5dk önce kullanıcıya hatırlatma gönder.
@@ -234,19 +239,50 @@ async def _trigger_attend_lesson(
     try:
         if settings.TELEGRAM_BOT_TOKEN:
             notifier = NotificationService(bot_token=settings.TELEGRAM_BOT_TOKEN)
-            await notifier.send_lesson_reminder(
+            sent = await notifier.send_lesson_reminder(
                 user_id=user_id,
                 course_name=course_name,
-                start_time=None,
+                start_time=start_time,
                 minutes_before=settings.MEETING_START_OFFSET_MINUTES,
             )
+            if sent:
+                log.info(
+                    "scheduler.reminder_sent",
+                    user_id=user_id,
+                    course_id=course_id,
+                    course=course_name,
+                    start_time=start_time,
+                    minutes_before=settings.MEETING_START_OFFSET_MINUTES,
+                )
+            else:
+                log.warning(
+                    "scheduler.reminder_failed",
+                    user_id=user_id,
+                    course_id=course_id,
+                    course=course_name,
+                    start_time=start_time,
+                    minutes_before=settings.MEETING_START_OFFSET_MINUTES,
+                    bot_token_configured=bool(settings.TELEGRAM_BOT_TOKEN),
+                    error="send_lesson_reminder_returned_false",
+                )
         else:
-            log.warning("scheduler.reminder_skipped_missing_bot_token", user_id=user_id)
+            log.warning(
+                "scheduler.reminder_skipped_missing_bot_token",
+                user_id=user_id,
+                course_id=course_id,
+                course=course_name,
+                start_time=start_time,
+                minutes_before=settings.MEETING_START_OFFSET_MINUTES,
+            )
     except Exception as e:
         log.warning(
             "scheduler.reminder_failed",
             user_id=user_id,
+            course_id=course_id,
             course=course_name,
+            start_time=start_time,
+            minutes_before=settings.MEETING_START_OFFSET_MINUTES,
+            bot_token_configured=bool(settings.TELEGRAM_BOT_TOKEN),
             error=str(e),
         )
 
@@ -256,6 +292,7 @@ async def _trigger_attend_lesson(
             course_id=course_id,
             course_name=course_name,
             dys_url=dys_url,
+            start_time=start_time,
             end_time=end_time,
             direct_url=direct_url,
             dys_search_hint=dys_search_hint,
@@ -263,7 +300,10 @@ async def _trigger_attend_lesson(
         log.info(
             "scheduler.task_enqueued",
             user_id=user_id,
+            course_id=course_id,
             course=course_name,
+            start_time=start_time,
+            minutes_before=settings.MEETING_START_OFFSET_MINUTES,
             celery_task_id=getattr(async_result, "id", None),
             queue="agent_queue",
         )
@@ -271,7 +311,9 @@ async def _trigger_attend_lesson(
         log.error(
             "scheduler.task_enqueue_failed",
             user_id=user_id,
+            course_id=course_id,
             course=course_name,
+            start_time=start_time,
             error=str(e),
             exc_info=True,
         )
