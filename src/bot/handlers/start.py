@@ -464,6 +464,8 @@ async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAU
 
                     # 2. Dersleri DB'ye kaydet
                     course_repo = CourseRepository(session)
+                    # Onboarding yeni programı "source of truth" kabul eder: eski aktif dersleri pasife çek.
+                    await course_repo.deactivate_all_for_user(user_id=user_id)
                     await course_repo.bulk_create_from_parsed(user_id=user_id, parsed_courses=courses)
                     await session.commit()
             except SQLAlchemyError as e:

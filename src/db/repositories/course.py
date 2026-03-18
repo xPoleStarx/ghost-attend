@@ -36,6 +36,18 @@ class CourseRepository:
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    async def deactivate_all_for_user(self, user_id: int) -> int:
+        """
+        Kullanıcının tüm derslerini pasif yap.
+
+        Not: Onboarding / schedule upload akışında yeni program kaydedilmeden önce
+        eski derslerin aktif kalıp job biriktirmesini engellemek için kullanılır.
+        """
+        result = await self.session.execute(
+            update(Course).where(Course.user_id == user_id).values(is_active=False)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
     async def find_by_name(
         self,
         user_id: int,

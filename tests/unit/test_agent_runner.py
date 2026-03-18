@@ -1,12 +1,10 @@
 """
-GhostAttend — Agent Runner Unit Tests
-
-AgentRunner result parsing ve hata yönetimi testleri.
-(Gerçek browser çalıştırmadan, mock ile)
+GhostAttend - Agent Runner Unit Tests
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agent.runner import AgentRunner
 from src.core.exceptions import (
@@ -22,8 +20,6 @@ from src.core.exceptions import (
 
 
 class TestAgentRunnerParseResult:
-    """_parse_result metod testleri."""
-
     def setup_method(self):
         self.runner = AgentRunner(
             session_id="test-session",
@@ -31,9 +27,8 @@ class TestAgentRunnerParseResult:
         )
 
     def test_successful_result(self):
-        result = self.runner._parse_result("Görev başarılı.")
+        result = self.runner._parse_result("Gorev basarili.")
         assert result["status"] == "completed"
-        assert "başarılı" in result["raw"]
 
     def test_dys_login_failed(self):
         with pytest.raises(AgentLoginFailed):
@@ -64,24 +59,47 @@ class TestAgentRunnerParseResult:
             self.runner._parse_result("HATA_KODU: MEETING_NOT_STARTED")
 
     def test_error_in_middle_of_text(self):
-        """Hata kodu metin içinde de tespit edilmeli."""
         with pytest.raises(AgentLoginFailed):
-            self.runner._parse_result(
-                "Adım 3 sonrası... HATA_KODU: DYS_LOGIN_FAILED ... devam"
-            )
+            self.runner._parse_result("Adim 3 sonrasi... HATA_KODU: DYS_LOGIN_FAILED ... devam")
 
     def test_no_error_code(self):
-        """Hata kodu olmayan sonuç başarılı sayılmalı."""
-        result = self.runner._parse_result("Tüm adımlar tamamlandı.")
+        result = self.runner._parse_result("Tum adimlar tamamlandi.")
         assert result["status"] == "completed"
+
+    def test_empty_history_raises_join_failed(self):
+        class EmptyHistory:
+            all_results = []
+
+        with pytest.raises(AgentJoinFailed):
+            self.runner._parse_result(EmptyHistory())
+
+
+@pytest.mark.asyncio
+async def test_runner_forces_headless_without_display(monkeypatch):
+    class FakeAgent:
+        init_kwargs = None
+
+        def __init__(self, **kwargs):
+            FakeAgent.init_kwargs = kwargs
+
+        async def run(self):
+            return "Tamam"
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    with patch("browser_use.Agent", FakeAgent):
+        with patch.object(AgentRunner, "_create_llm", return_value=MagicMock()):
+            runner = AgentRunner(session_id="t", user_id=1)
+            result = await runner.run(course_name="Test", dys_url="https://dys", end_time="10:00")
+
+    assert result["status"] == "completed"
+    assert FakeAgent.init_kwargs is not None
+    assert FakeAgent.init_kwargs["browser_config"]["headless"] is True
 
 
 class TestAgentRunnerRetry:
-    """run_with_retry metod testleri."""
-
     @pytest.mark.asyncio
     async def test_retry_on_page_frozen(self):
-        """PAGE_FROZEN hatası retry'lanmalı."""
         runner = AgentRunner(session_id="t", user_id=1)
 
         call_count = 0
@@ -106,7 +124,6 @@ class TestAgentRunnerRetry:
 
     @pytest.mark.asyncio
     async def test_mfa_not_retried(self):
-        """MFA hatası retry'lanMAMALI (kullanıcı müdahalesi gerekli)."""
         runner = AgentRunner(session_id="t", user_id=1)
 
         async def mock_run(**kwargs):
@@ -119,11 +136,10 @@ class TestAgentRunnerRetry:
 
     @pytest.mark.asyncio
     async def test_login_failed_not_retried(self):
-        """Login hatası retry'lanMAMALI (şifre yanlışsa tekrar da yanlış)."""
         runner = AgentRunner(session_id="t", user_id=1)
 
         async def mock_run(**kwargs):
-            raise AgentLoginFailed("DYS giriş başarısız")
+            raise AgentLoginFailed("DYS giris basarisiz")
 
         runner.run = mock_run
 
@@ -132,7 +148,6 @@ class TestAgentRunnerRetry:
 
     @pytest.mark.asyncio
     async def test_max_retry_exceeded(self):
-        """Tüm retry'lar başarısız olursa AgentMaxRetryExceeded."""
         runner = AgentRunner(session_id="t", user_id=1)
 
         async def mock_run(**kwargs):

@@ -21,6 +21,15 @@ try {
 $ComposeFile = "docker-compose.dev.yml"
 $ComposeArgs = @("compose", "-f", $ComposeFile)
 
+function Set-EnvValue {
+    param(
+        [string]$Key,
+        [string]$Value
+    )
+
+    (Get-Content ".env") -replace "^$Key=.*", "$Key=$Value" | Set-Content ".env"
+}
+
 # 2. .env Dosyasinin Olusturulmasi
 if (-not (Test-Path ".env")) {
     Write-Host ".env.example kopyalanarak .env dosyasi olusturuluyor..." -ForegroundColor Yellow
@@ -36,7 +45,7 @@ Write-Host "Eger onceden .env dosyanizi ayarladiysaniz bu adimlari Enter'a basar
 
 $tgToken = Read-Host "Telegram Bot Token'inizi giriniz"
 if (![string]::IsNullOrEmpty($tgToken)) {
-    (Get-Content ".env") -replace "^TELEGRAM_BOT_TOKEN=.*", "TELEGRAM_BOT_TOKEN=$tgToken" | Set-Content ".env"
+    Set-EnvValue "TELEGRAM_BOT_TOKEN" $tgToken
 }
 
 Write-Host "`nHangi yapay zeka saglayicisini kullanmak istersiniz?"
@@ -55,11 +64,11 @@ if ($providerChoice -eq "2") {
     $targetKeyVar = "ANTHROPIC_API_KEY"
 }
 
-(Get-Content ".env") -replace "^AGENT_LLM_PROVIDER=.*", "AGENT_LLM_PROVIDER=$provider" | Set-Content ".env"
+Set-EnvValue "AGENT_LLM_PROVIDER" $provider
 
 $apiKey = Read-Host "$provider API Key'inizi giriniz"
 if (![string]::IsNullOrEmpty($apiKey)) {
-    (Get-Content ".env") -replace "^$targetKeyVar=.*", "$targetKeyVar=$apiKey" | Set-Content ".env"
+    Set-EnvValue $targetKeyVar $apiKey
 }
 
 # 4. Sifrelerin ve Anahtarlarin Otomatik Uretimi
@@ -76,19 +85,32 @@ function Get-RandomString($length) {
 $envContent = Get-Content ".env"
 if ($envContent -match "^MASTER_ENCRYPTION_KEY=\s*(#.*)?$") {
     $newKey = Get-RandomString 32
-    (Get-Content ".env") -replace "^MASTER_ENCRYPTION_KEY=.*", "MASTER_ENCRYPTION_KEY=$newKey" | Set-Content ".env"
+    Set-EnvValue "MASTER_ENCRYPTION_KEY" $newKey
 }
 if ($envContent -match "^POSTGRES_USER=\s*$") {
-    (Get-Content ".env") -replace "^POSTGRES_USER=.*", "POSTGRES_USER=ghost_admin" | Set-Content ".env"
+    Set-EnvValue "POSTGRES_USER" "ghost_admin"
 }
 if ($envContent -match "^POSTGRES_PASSWORD=\s*$") {
     $pgPass = Get-RandomString 16
-    (Get-Content ".env") -replace "^POSTGRES_PASSWORD=.*", "POSTGRES_PASSWORD=$pgPass" | Set-Content ".env"
+    Set-EnvValue "POSTGRES_PASSWORD" $pgPass
 }
 if ($envContent -match "^REDIS_PASSWORD=\s*$") {
     $rdPass = Get-RandomString 16
-    (Get-Content ".env") -replace "^REDIS_PASSWORD=.*", "REDIS_PASSWORD=$rdPass" | Set-Content ".env"
+    Set-EnvValue "REDIS_PASSWORD" $rdPass
 }
+
+$envMap = @{}
+Get-Content ".env" | ForEach-Object {
+    if ($_ -match '^\s*#' -or $_ -notmatch '=') {
+        return
+    }
+    $parts = $_ -split '=', 2
+    $envMap[$parts[0]] = $parts[1]
+}
+
+Set-EnvValue "ENVIRONMENT" "development"
+Set-EnvValue "DATABASE_URL" "postgresql+asyncpg://$($envMap.POSTGRES_USER):$($envMap.POSTGRES_PASSWORD)@$($envMap.POSTGRES_HOST):$($envMap.POSTGRES_PORT)/$($envMap.POSTGRES_DB)"
+Set-EnvValue "REDIS_URL" "redis://:$($envMap.REDIS_PASSWORD)@$($envMap.REDIS_HOST):$($envMap.REDIS_PORT)/0"
 
 # 5. Host Klasorlerinin Ayarlanmasi
 Write-Host "Gerekli klasorler olusturuluyor..." -ForegroundColor Yellow
@@ -106,10 +128,10 @@ Write-Host ""
 $startNow = Read-Host "Sistemi simdi baslatmak ister misiniz? (Y/n)"
 if ([string]::IsNullOrEmpty($startNow) -or $startNow -match "^[Yy]$") {
     Write-Host "Docker Compose ile sistem baslatiliyor..." -ForegroundColor Cyan
-    docker @ComposeArgs up -d
+    docker @ComposeArgs up -d --build
 
-    Write-Host "Sistem baslatildi! Loglari gormek icin: docker compose -f $ComposeFile logs -f bot worker" -ForegroundColor Green
+    Write-Host "Sistem baslatildi! Sonraki kullanim icin: .\scripts\dev.ps1 logs" -ForegroundColor Green
 } else {
-    Write-Host "Kurulum tamamlandi. Istediginiz zaman 'docker compose -f $ComposeFile up -d' ile baslatabilirsiniz."
+    Write-Host "Kurulum tamamlandi. Istediginiz zaman '.\scripts\dev.ps1 up' ile baslatabilirsiniz."
 }
 Write-Host "Iyi dersler!" -ForegroundColor Yellow

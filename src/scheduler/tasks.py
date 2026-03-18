@@ -20,6 +20,24 @@ log = get_logger(__name__)
 _worker_loop: asyncio.AbstractEventLoop | None = None
 
 
+class AttendLessonTaskFailed(RuntimeError):
+    """Celery tarafında business-failure durumlarını hata olarak yükselt."""
+
+
+def _raise_for_unsuccessful_task_result(result: dict) -> None:
+    status = str(result.get("status") or "unknown")
+    if status in {"completed", "cancelled"}:
+        return
+
+    details = (
+        result.get("error")
+        or result.get("scenario")
+        or result.get("failure_reason")
+        or "unknown_error"
+    )
+    raise AttendLessonTaskFailed(f"{status}: {details}")
+
+
 def _run_async(coro):
     """
     Senkron Celery worker'da async fonksiyon çalıştır.
@@ -108,6 +126,24 @@ def attend_lesson_task(
                 course=course_name,
             )
 
+            # Kullanıcıya "başlıyor" bildirimi (job tetiklendiğinde 5dk önce çalışır).
+            try:
+                await notifier.send_message(
+                    user_id=user_id,
+                    text=(
+                        f"⏰ **{course_name}** dersi için otomatik katılım başlatılıyor...\n"
+                        "Tarayıcı açılıp derse girildiğinde ekran görüntüleri/bildirimler gelmeye başlayacak."
+                    ),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                log.warning(
+                    "task.start_notification_failed",
+                    task_id=self.request.id,
+                    user_id=user_id,
+                    error=str(e),
+                )
+
             # Orchestrator
             orchestrator = SessionOrchestrator(
                 user_id=user_id,
@@ -134,6 +170,7 @@ def attend_lesson_task(
 
     try:
         result = _run_async(_run())
+        _raise_for_unsuccessful_task_result(result)
         log.info(
             "task.attend_lesson_complete",
             task_id=self.request.id,
@@ -146,7 +183,7 @@ def attend_lesson_task(
             task_id=self.request.id,
             error=str(e),
         )
-        return {"status": "error", "error": str(e)}
+        raise
 
 
 @celery_app.task(name="src.scheduler.tasks.check_cookie_expiry_task")

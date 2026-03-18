@@ -33,6 +33,7 @@ services:
     environment:
       - ENVIRONMENT=development
       - LOG_LEVEL=DEBUG
+      - BROWSER_HEADLESS=true
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +54,7 @@ services:
     environment:
       - ENVIRONMENT=development
       - LOG_LEVEL=DEBUG
+      - BROWSER_HEADLESS=true
     depends_on:
       postgres:
         condition: service_healthy

@@ -23,6 +23,8 @@ services:
       dockerfile: docker/Dockerfile.worker
     restart: unless-stopped
     env_file: .env
+    environment:
+      - BROWSER_HEADLESS=true
     depends_on:
       - redis
       - postgres
@@ -43,6 +45,8 @@ services:
     command: python -m src.scheduler.main
     restart: unless-stopped
     env_file: .env
+    environment:
+      - BROWSER_HEADLESS=true
     depends_on:
       - redis
       - postgres

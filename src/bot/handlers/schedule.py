@@ -273,6 +273,8 @@ async def _handle_confirm_all(update: Update, context: ContextTypes.DEFAULT_TYPE
                         await session.commit()
 
                     course_repo = CourseRepository(session)
+                    # Yeni yüklenen programı "source of truth" kabul et: eski aktif dersleri pasife çek.
+                    await course_repo.deactivate_all_for_user(user_id=user_id)
                     await course_repo.bulk_create_from_parsed(user_id=user_id, parsed_courses=courses)
                     await session.commit()
             except SQLAlchemyError as e:

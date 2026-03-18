@@ -52,7 +52,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "📊 **Oturum Durumu**\n\n"
             "Zamanlanmış ders yok.\n"
             "/upload\\_schedule ile ders programını yükle.",
-            parse_mode="Markdown",
         )
         return
 
@@ -131,7 +130,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
     lines.append(f"\nToplam: {len(courses)} ders (DB) · {len(jobs)} job (scheduler)")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    # Markdown parse hataları (özellikle backtick/escape edge-case'leri) yerine plain text gönder.
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -148,7 +148,7 @@ async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_T
 
     async with get_session() as session:
         # 1) Runtime oturumunu iptal et + Redis temizliği
-        result = await cancel_user_session(
+        cancel_result = await cancel_user_session(
             user_id=user.id,
             redis_client=redis_client,
             db_session=session,
@@ -169,7 +169,12 @@ async def cancel_session_command(update: Update, context: ContextTypes.DEFAULT_T
 
     await update.message.reply_text(
         "⏹️ İptal alındı.\n"
-        "Bu kullanıcıya ait tüm dersler, oturumlar, bildirimler ve kimlik bilgileri veritabanından silindi.\n"
+        "Bu kullanıcıya ait tüm dersler, oturumlar, bildirimler ve kimlik bilgileri veritabanından silindi.\n\n"
+        f"Temizlik özeti:\n"
+        f"- scheduler_job_removed: {removed}\n"
+        f"- cancel_flag_set: {bool(cancel_result.get('cancel_flag_set'))}\n"
+        f"- redis_deleted: {int(cancel_result.get('redis_deleted') or 0)}\n"
+        f"- db_session_cancelled: {bool(cancel_result.get('db_cancelled'))}\n\n"
         "Tekrar başlamak için /start yazabilirsin."
     )
 

@@ -33,6 +33,39 @@ except ModuleNotFoundError:
 _scheduler: AsyncIOScheduler | None = None
 
 
+def _maybe_start_scheduler(scheduler: AsyncIOScheduler, *, paused: bool = True) -> bool:
+    """
+    Scheduler'ı gerektiğinde kısa süreliğine start et.
+
+    Neden:
+    - APScheduler persistent jobstore (Redis) job'ları scheduler start edildiğinde yükler.
+    - Bot gibi non-scheduler process'lerde job listeleme/silme için kısa süreli paused start gerekir.
+
+    Returns:
+        started_here: Bu fonksiyon scheduler'ı başlattıysa True.
+    """
+    try:
+        running = bool(getattr(scheduler, "running", False))
+    except Exception:
+        running = False
+
+    if running:
+        return False
+
+    scheduler.start(paused=paused)
+    return True
+
+
+def _maybe_shutdown_scheduler(scheduler: AsyncIOScheduler, *, started_here: bool) -> None:
+    """started_here=True ise scheduler'ı kapat (non-scheduler process hijyeni)."""
+    if not started_here:
+        return
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:
+        pass
+
+
 def _redis_conn_from_settings() -> tuple[str, int, str | None]:
     """
     APScheduler RedisJobStore için bağlantı parametrelerini döndür.
@@ -253,11 +286,8 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
         Oluşturulan job ID'leri
     """
     scheduler = get_scheduler()
-    started_here = False
-    if not scheduler.running:
-        # Jobstore'a persist garantisi için kısa süreli paused start.
-        scheduler.start(paused=True)
-        started_here = True
+    # Jobstore'a persist garantisi için kısa süreli paused start.
+    started_here = _maybe_start_scheduler(scheduler, paused=True)
 
     from src.db.connection import get_session
     from src.db.repositories.credential import CredentialRepository
@@ -276,6 +306,34 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
 
         course_repo = CourseRepository(session)
         courses = await course_repo.get_user_courses(user_id, active_only=True)
+
+        # Drift cleanup: DB'de olmayan (veya artık online olmayan) course job'larını temizle.
+        # Bu özellikle aynı kullanıcı için tekrar onboarding/upload yapıldığında eski job'ların birikmesini engeller.
+        try:
+            valid_course_ids: set[str] = {str(c.id) for c in courses if c.is_online is not False}
+            removed_drift = 0
+            for job in scheduler.get_jobs():
+                if not job.id.startswith(f"course_{user_id}_"):
+                    continue
+
+                # job_id: course_{user_id}_{course_uuid}
+                parts = job.id.split("_", 2)
+                course_part = parts[2] if len(parts) == 3 else ""
+                if course_part and course_part in valid_course_ids:
+                    continue
+
+                scheduler.remove_job(job.id)
+                removed_drift += 1
+
+            if removed_drift:
+                log.info(
+                    "scheduler.drift_jobs_removed",
+                    user_id=user_id,
+                    removed=removed_drift,
+                    valid_count=len(valid_course_ids),
+                )
+        except Exception as e:
+            log.warning("scheduler.drift_cleanup_failed", user_id=user_id, error=str(e))
 
         for course in courses:
             # is_online=False → yüz yüze, zamanlamaya gerek yok
@@ -316,11 +374,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
     )
 
     # Bot gibi non-scheduler process'lerde scheduler instance'ı çalışır bırakma.
-    if started_here:
-        try:
-            scheduler.shutdown(wait=False)
-        except Exception:
-            pass
+    _maybe_shutdown_scheduler(scheduler, started_here=started_here)
 
     return job_ids
 
@@ -328,12 +382,16 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
 async def unschedule_all_for_user(user_id: int) -> int:
     """Kullanıcının tüm zamanlanmış job'larını kaldır."""
     scheduler = get_scheduler()
+    started_here = _maybe_start_scheduler(scheduler, paused=True)
     removed = 0
 
-    for job in scheduler.get_jobs():
-        if job.id.startswith(f"course_{user_id}_"):
-            scheduler.remove_job(job.id)
-            removed += 1
+    try:
+        for job in scheduler.get_jobs():
+            if job.id.startswith(f"course_{user_id}_"):
+                scheduler.remove_job(job.id)
+                removed += 1
+    finally:
+        _maybe_shutdown_scheduler(scheduler, started_here=started_here)
 
     log.info("scheduler.all_removed", user_id=user_id, removed=removed)
     return removed
@@ -347,6 +405,7 @@ async def reconcile_jobs_for_user(user_id: int) -> dict:
     - DB'de aktif online dersler için job oluşturmayı schedule_all_courses_for_user zaten yapar.
     """
     scheduler = get_scheduler()
+    started_here = _maybe_start_scheduler(scheduler, paused=True)
 
     from src.db.connection import get_session
     from src.db.repositories.course import CourseRepository
@@ -362,19 +421,22 @@ async def reconcile_jobs_for_user(user_id: int) -> dict:
 
     removed = 0
     kept = 0
-    for job in scheduler.get_jobs():
-        if not job.id.startswith(f"course_{user_id}_"):
-            continue
+    try:
+        for job in scheduler.get_jobs():
+            if not job.id.startswith(f"course_{user_id}_"):
+                continue
 
-        # job_id: course_{user_id}_{course_uuid}
-        parts = job.id.split("_", 2)
-        course_part = parts[2] if len(parts) == 3 else ""
-        if course_part and course_part in valid_course_ids:
-            kept += 1
-            continue
+            # job_id: course_{user_id}_{course_uuid}
+            parts = job.id.split("_", 2)
+            course_part = parts[2] if len(parts) == 3 else ""
+            if course_part and course_part in valid_course_ids:
+                kept += 1
+                continue
 
-        scheduler.remove_job(job.id)
-        removed += 1
+            scheduler.remove_job(job.id)
+            removed += 1
+    finally:
+        _maybe_shutdown_scheduler(scheduler, started_here=started_here)
 
     log.info(
         "scheduler.reconcile_done",
@@ -391,15 +453,21 @@ def get_user_jobs(user_id: int) -> list[dict]:
     scheduler = get_scheduler()
     jobs = []
 
-    for job in scheduler.get_jobs():
-        if job.id.startswith(f"course_{user_id}_"):
-            next_run = getattr(job, "next_run_time", None)
-            jobs.append({
-                "id": job.id,
-                "name": job.name,
-                # APScheduler 3.x: next_run_time. Ortam drift'inde attribute yoksa None kalır.
-                "next_run": next_run,
-                "job_type": f"{type(job).__module__}.{type(job).__name__}",
-            })
+    started_here = _maybe_start_scheduler(scheduler, paused=True)
+    try:
+        for job in scheduler.get_jobs():
+            if job.id.startswith(f"course_{user_id}_"):
+                next_run = getattr(job, "next_run_time", None)
+                jobs.append(
+                    {
+                        "id": job.id,
+                        "name": job.name,
+                        # APScheduler 3.x: next_run_time. Ortam drift'inde attribute yoksa None kalır.
+                        "next_run": next_run,
+                        "job_type": f"{type(job).__module__}.{type(job).__name__}",
+                    }
+                )
+    finally:
+        _maybe_shutdown_scheduler(scheduler, started_here=started_here)
 
     return jobs

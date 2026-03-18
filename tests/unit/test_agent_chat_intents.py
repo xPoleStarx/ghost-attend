@@ -1,8 +1,12 @@
-import pytest
+from datetime import time
 
-from src.bot.handlers.agent_chat import _compute_next_lesson, _detect_intent
-from datetime import time, datetime, timedelta
-from zoneinfo import ZoneInfo
+from src.bot.handlers.agent_chat import (
+    _compute_next_lesson,
+    _detect_intent,
+    _extract_manual_join_course_query,
+    _is_generic_manual_join_query,
+    _pick_manual_join_target,
+)
 
 
 class DummyCourse:
@@ -17,7 +21,6 @@ def test_detect_intent_join_variants():
     assert _detect_intent("derse gir") == "ask_join_or_status"
     assert _detect_intent("Derse girecek misin") == "ask_join_or_status"
     assert _detect_intent("derse katılacak mısın") == "ask_join_or_status"
-    # Zaman vurgulu ifadeler manuel join isteği olarak ele alınır
     assert _detect_intent("şimdi derse gir") == "manual_join_request"
 
 
@@ -31,23 +34,44 @@ def test_detect_intent_manual_join_request():
 
 
 def test_detect_intent_ambiguous_schedule_change():
-    text = "ders saatini güncelle 23.30 olarak başlangıç"
-    assert _detect_intent(text) == "ambiguous_schedule_change"
+    assert _detect_intent("ders saatini güncelle 23.30 olarak başlangıç") == "ambiguous_schedule_change"
 
 
 def test_detect_intent_none_for_clear_text():
-    text = "Kariyer Planlama dersini salı 23:30 yap"
-    assert _detect_intent(text) is None
+    assert _detect_intent("Kariyer Planlama dersini salı 23:30 yap") is None
+
+
+def test_extract_manual_join_course_query():
+    assert _extract_manual_join_course_query("kariyer planlama dersine katıl") == "kariyer planlama"
+    assert _extract_manual_join_course_query('"Kariyer Planlama" dersine şimdi gir') == "kariyer planlama"
+
+
+def test_generic_manual_join_query_detection():
+    assert _is_generic_manual_join_query(_extract_manual_join_course_query("derse katılım şimdi")) is True
+    assert _is_generic_manual_join_query(_extract_manual_join_course_query("Kariyer Planlama dersine katıl")) is False
+
+
+def test_pick_manual_join_target_prefers_best_match():
+    class Course:
+        def __init__(self, course_id: str, name: str):
+            self.id = course_id
+            self.name = name
+            self.is_active = True
+
+    exact = Course("1", "Kariyer Planlama")
+    weak = Course("2", "Kariyer Gelişimi")
+
+    target, plausible = _pick_manual_join_target("kariyer planlama", [weak, exact])
+
+    assert target is exact
+    assert exact in plausible
 
 
 def test_compute_next_lesson_picks_closest():
-    # Pazartesi 10:00 varsayımı ile near future ders seçimini kontrol etmek zor olduğu için
-    # sadece fonksiyonun daha küçük delta'yı seçtiğini doğruluyoruz.
     courses = [
-        DummyCourse("Ders A", 0, 9, 0),   # Pazartesi 09:00
-        DummyCourse("Ders B", 0, 15, 0),  # Pazartesi 15:00
+        DummyCourse("Ders A", 0, 9, 0),
+        DummyCourse("Ders B", 0, 15, 0),
     ]
 
     next_course = _compute_next_lesson(courses)
     assert next_course in courses
-

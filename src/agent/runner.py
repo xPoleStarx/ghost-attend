@@ -7,6 +7,7 @@ architecture.md Section 9.2
 """
 
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 
@@ -211,16 +212,55 @@ class AgentRunner:
                         # Canlı rapor başarısız olsa da agent devam etmeli
                         pass
 
-        try:
-            agent = Agent(
-                task=task,
-                llm=llm,
-                on_step=_on_step,
+        # browser-use sürümleri arasında init signature farkları olabiliyor.
+        # Ayrıca Docker ortamında X server olmadığı için (headed) browser başlatmak patlar.
+        # Bu yüzden headless ayarını desteklenen isimlerle best-effort geçiyoruz.
+        # DISPLAY yoksa headed browser kesin patlar; bu durumda config ne olursa olsun headless'a zorla.
+        headless = bool(getattr(settings, "BROWSER_HEADLESS", True)) or not bool(os.environ.get("DISPLAY"))
+        log.info(
+            "agent.browser_mode",
+            session_id=self.session_id,
+            user_id=self.user_id,
+            configured_headless=bool(getattr(settings, "BROWSER_HEADLESS", True)),
+            display_available=bool(os.environ.get("DISPLAY")),
+            effective_headless=headless,
+        )
+        agent = None
+        init_errors: list[str] = []
+        on_step_supported = False
+
+        candidate_kwargs = [
+            {"task": task, "llm": llm, "on_step": _on_step, "browser_config": {"headless": headless}},
+            {"task": task, "llm": llm, "on_step": _on_step, "headless": headless},
+            {"task": task, "llm": llm, "browser_config": {"headless": headless}},
+            {"task": task, "llm": llm, "headless": headless},
+            {"task": task, "llm": llm, "on_step": _on_step},
+            {"task": task, "llm": llm},
+        ]
+
+        for kwargs in candidate_kwargs:
+            try:
+                agent = Agent(**kwargs)
+                on_step_supported = "on_step" in kwargs
+                break
+            except TypeError as e:
+                init_errors.append(str(e))
+                continue
+
+        if agent is None:
+            log.error(
+                "agent.init_failed",
+                session_id=self.session_id,
+                user_id=self.user_id,
+                headless=headless,
+                errors=init_errors[-3:],
             )
-        except TypeError:
-            # browser-use sürümü callback desteklemiyor olabilir
+            raise AgentJoinFailed(
+                "Tarayıcı/agent başlatılamadı. Sunucuda headless browser çalıştığından emin ol."
+            )
+
+        if not on_step_supported:
             log.warning("agent.on_step_not_supported", session_id=self.session_id)
-            agent = Agent(task=task, llm=llm)
 
         try:
             # Timeout ile çalıştır
@@ -241,12 +281,38 @@ class AgentRunner:
 
     def _parse_result(self, raw_result) -> dict:
         """Agent sonucunu parse et ve hata kodlarını exception'a çevir."""
-        
-        # Eğer Playwright çökmesi veya agent hatası sebebiyle hiç adım işlenmediyse empty history döner.
-        if hasattr(raw_result, "all_results") and not raw_result.all_results:
-            raise AgentJoinFailed("Tarayıcı yüklenemedi veya Agent başlatılamadı. Lütfen sunucu loglarını kontrol edin.")
-            
+
+        def _has_empty_history(obj, depth: int = 0) -> bool:
+            if depth > 4:
+                return False
+
+            try:
+                all_results = getattr(obj, "all_results")
+            except Exception:
+                all_results = None
+
+            if all_results is not None:
+                try:
+                    return len(all_results) == 0
+                except Exception:
+                    try:
+                        return not all_results
+                    except Exception:
+                        return False
+
+            if isinstance(obj, dict):
+                return any(_has_empty_history(v, depth + 1) for v in obj.values())
+            if isinstance(obj, (list, tuple, set)):
+                return any(_has_empty_history(v, depth + 1) for v in obj)
+            return False
+
         result_text = str(raw_result)
+
+        # Eğer Playwright çökmesi veya agent hatası sebebiyle hiç adım işlenmediyse empty history döner.
+        if _has_empty_history(raw_result) or "AgentHistoryList(all_results=[]" in result_text:
+            raise AgentJoinFailed(
+                "Tarayıcı yüklenemedi veya Agent başlatılamadı. Lütfen sunucu loglarını kontrol edin."
+            )
 
         error_map = {
             f"HATA_KODU: {ERROR_DYS_LOGIN_FAILED}": AgentLoginFailed("DYS giriş başarısız"),

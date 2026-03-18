@@ -1,120 +1,130 @@
-# 🤖 GhostAttend
+# GhostAttend
 
-> Üniversite canlı derslerine otonom katılım sağlayan Telegram bot + web agent.
+Telegram bot + web agent tabanli, universite canli derslerine otonom katilim sistemi.
 
-[![CI](https://github.com/GhostAttend/ghost-attend/actions/workflows/ci.yml/badge.svg)](https://github.com/GhostAttend/ghost-attend/actions)
+## Ne yapar?
 
-## 🎯 Ne Yapar?
+- Ders programini goruntuden veya metinden parse eder.
+- Dersleri scheduler ile zamanlar.
+- Worker tarafinda DYS/OBS uzerinden Teams/Zoom linkini bulup derse katilir.
+- Telegram uzerinden durum, ekran goruntusu ve hata bildirimi gonderir.
 
-1. **Ders programını fotoğraftan okur** — Vision LLM (Gemini/GPT-4o/Claude) ile
-2. **Dersten 5dk önce aktifleşir** — APScheduler + Celery ile zamanlar
-3. **DYS'ye giriş yapar** — Kayıtlı credential'lar veya cookie ile
-4. **Ders linkini bulur** — DYS'te Teams/Zoom linkini otonom keşfeder
-5. **Derse katılır** — Kamera/mikrofon kapalı, sessizce
-6. **MFA halledebilir** — SMS kodu Telegram'dan alır, Authenticator push destekler
-7. **Her adımda screenshot gönderir** — Telegram üzerinden takip et
-8. **12 senaryoya hazır** — Login fail, link bulunamadı, sayfa donması, ağ hatası...
+## Hizli baslangic
 
-### 🌐 Desteklenen Platformlar
-- ✅ Microsoft Teams
-- ✅ Zoom
-- ⏳ Google Meet (Yakında)
-- ⏳ WebEx (Yakında)
+Bu repo icin en kolay yol kurulum scriptini bir kez, sonra da gunluk isler icin `dev` scriptini kullanmaktir.
 
-## 📱 Telegram Komutları
+### Windows
 
-| Komut | Açıklama |
-|---|---|
-| `/start` | İlk kurulum |
-| `/upload_schedule` | Ders programı yükle (fotoğraf) |
-| `/status` | Zamanlanmış dersleri gör |
-| `/courses` | Kayıtlı derslerini listele |
-| `/pause` / `/resume` | Otomasyonu durdur/devam ettir |
-| `/cancel` | Aktif oturumu iptal et |
-| `/reauth` | Giriş bilgilerini güncelle |
-| `/help` | Tüm komutlar |
-
-## 🏗️ Mimari
-
-```
-Telegram Bot ←→ Redis ←→ Celery Worker ←→ browser-use + Playwright
-     ↕              ↕              ↕
-  PostgreSQL    APScheduler    Vision LLM
+```powershell
+git clone https://github.com/xPoleStarx/ghost-attend.git
+cd ghost-attend
+.\scripts\setup.ps1
 ```
 
-## 🚀 Hızlı Başlangıç
+Kurulumdan sonra gunluk kullanim:
 
-**Ön Koşullar:** Sisteminizde [Docker](https://docs.docker.com/get-docker/) ve [Docker Compose](https://docs.docker.com/compose/) kurulu olmalıdır. Ayrıca bir [Telegram Bot Token](https://core.telegram.org/bots#how-do-i-create-a-bot) ve en az bir LLM Provider API Key (Google Gemini, OpenAI veya Anthropic) gereklidir.
+```powershell
+.\scripts\dev.ps1 up
+.\scripts\dev.ps1 logs
+.\scripts\dev.ps1 rebuild
+```
+
+### Linux / macOS
 
 ```bash
 git clone https://github.com/xPoleStarx/ghost-attend.git
 cd ghost-attend
-
-# Kurulumu başlat (Linux/macOS)
 bash scripts/setup.sh
-
-# Kurulumu başlat (Windows / PowerShell)
-.\scripts\setup.ps1
 ```
 
-### Servis Yönetimi (Günlük Kullanım)
+Kurulumdan sonra gunluk kullanim:
 
-Kurulum script'i sistemi başlattıktan sonra aşağıdaki komutlarla yönetebilirsiniz:
+```bash
+./scripts/dev.sh up
+./scripts/dev.sh logs
+./scripts/dev.sh rebuild
+```
+
+## Bu degisikliklerin gecerli olmasi icin ne yapmaliyim?
+
+Hangi compose dosyasini kullandigina gore degisiyor:
+
+- `docker-compose.dev.yml` kullaniyorsan:
+  - `src/` altindaki Python degisiklikleri volume ile mount edildigi icin cogu zaman sadece container restart yeterlidir.
+  - Ama bu tur degisikliklerde `docker-compose.dev.yml` environment'i de degistigi icin en temiz yol `rebuild` calistirmaktir.
+- `docker-compose.yml` kullaniyorsan:
+  - Image icine kopyalandigi icin rebuild gerekir.
+
+Onerilen komut:
 
 ```powershell
-# Servisleri başlat
-docker compose -f docker-compose.dev.yml up -d
-
-# Logları takip et
-docker compose -f docker-compose.dev.yml logs -f bot worker
-
-# Servisleri durdur
-docker compose -f docker-compose.dev.yml down
-
-# Tam temizlik (DB dahil her şeyi siler)
-docker compose -f docker-compose.dev.yml down -v
+.\scripts\dev.ps1 rebuild
 ```
 
-### Logları Görüntüleme
+veya
 
-Servisler Docker ile ayağa kalktıktan sonra Telegram botu ve worker loglarını takip etmek için:
+```bash
+./scripts/dev.sh rebuild
+```
+
+## En sik kullanilan komutlar
+
+### Windows
 
 ```powershell
-docker compose -f docker-compose.dev.yml logs -f bot worker
+.\scripts\dev.ps1 up
+.\scripts\dev.ps1 rebuild
+.\scripts\dev.ps1 logs
+.\scripts\dev.ps1 ps
+.\scripts\dev.ps1 migrate
+.\scripts\dev.ps1 down
+.\scripts\dev.ps1 reset
 ```
 
-### T-5dk Tetikleme Smoke Test
+### Linux / macOS
 
-Yakın zamana ayarlı bir dersle uçtan uca akışı doğrulamak için checklist:
+```bash
+./scripts/dev.sh up
+./scripts/dev.sh rebuild
+./scripts/dev.sh logs
+./scripts/dev.sh ps
+./scripts/dev.sh migrate
+./scripts/dev.sh down
+./scripts/dev.sh reset
+```
 
-- `docs/TRIGGER_TEST.md`
+## Kurulum ozeti
 
-> 🪄 **Not:** Kurulum betiği size ihtiyacı olan API anahtarlarını sırayla soracak, şifrelerinizi tamamen otonom üretecek ve onayınızla birlikte sistemi ayağa kaldıracaktır. Ekstra dosya düzenlemenize veya komut çalıştırmanıza gerek yoktur!
+`setup` scriptleri sunlari yapar:
 
-📖 Gelişmiş yapılandırmalar için: [docs/SETUP.md](docs/SETUP.md)
+- `.env.example` dosyasini `.env` olarak kopyalar.
+- Telegram token ve tek bir LLM provider API key ister.
+- `MASTER_ENCRYPTION_KEY`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` gibi alanlari uretir.
+- `DATABASE_URL` ve `REDIS_URL` degerlerini gercek sifrelerle senkronize eder.
+- Development ortaminda `docker compose up -d --build` ile sistemi kaldirir.
 
-## 🛡️ Güvenlik
+## Servisler
 
-- Şifreler **Fernet + PBKDF2-SHA256** ile şifrelenir (user-specific key)
-- Telegram'daki şifre mesajları **anında silinir**
-- Docker container'lar **non-root** çalışır
-- 📖 [docs/SECURITY.md](docs/SECURITY.md)
+- `bot`: Telegram botu
+- `worker`: Celery worker + Playwright/browser-use
+- `scheduler`: APScheduler tetikleyicisi
+- `postgres`: kalici veri
+- `redis`: queue, state, scheduler store
 
-## 📚 Dokümantasyon
+## Dikkat edilmesi gerekenler
+
+- Worker/scheduler container icinde browser her zaman headless calisir. Bu bilincli bir ayardir.
+- `docker-compose.dev.yml` development icindir.
+- Production icin `docker-compose.yml` ve uygun domain/SSL/webhook ayarlari gerekir.
+
+## Dokumantasyon
 
 - [Kurulum Rehberi](docs/SETUP.md)
-- [Katkıda Bulunma](docs/CONTRIBUTING.md)
-- [Güvenlik Politikası](docs/SECURITY.md)
-- [Senaryo Matrisi](docs/SCENARIOS.md)
-- [Mimari Dokümanı](architecture.md)
+- [Trigger Smoke Test](docs/TRIGGER_TEST.md)
+- [Guvenlik](docs/SECURITY.md)
+- [Katki Rehberi](docs/CONTRIBUTING.md)
+- [Mimari](architecture.md)
 
-## ⚖️ Lisans
+## Lisans
 
-MIT — [LICENSE](LICENSE)
-
-## 💬 Destek ve İletişim
-
-Herhangi bir sorun yaşarsanız, üniversitenizin portalı desteklenmiyorsa veya yeni bir özellik önermek isterseniz lütfen [Issues](https://github.com/xPoleStarx/ghost-attend/issues) sekmesinden bildirimde bulunun.
-
-> ⚠️ **Sorumluluk:** Bu yazılım eğitim amaçlıdır. Üniversite yönetmeliklerine
-> ve kullanılan platform ToS'larına uygunluk kullanıcının sorumluluğundadır.
+MIT

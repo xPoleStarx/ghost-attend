@@ -143,6 +143,153 @@ def _detect_intent(text: str) -> str | None:
     return None
 
 
+def _normalize_manual_join_text(text: str) -> str:
+    normalized = text.casefold().replace("ï¿½", "ş")
+    normalized = (
+        normalized.replace("â€™", "'")
+        .replace("’", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+    )
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _extract_manual_join_course_query(text: str) -> str:
+    normalized = _normalize_manual_join_text(text)
+    match = re.search(r"(?P<course>.+?)\s+dersine\b", normalized)
+    if match:
+        candidate = match.group("course")
+    else:
+        match = re.search(r"(?P<course>.+?)\s+derse\b", normalized)
+        if match:
+            candidate = match.group("course")
+        else:
+            candidate = normalized
+            candidate = re.sub(
+                r"\b(derse|dersine|şimdi|hemen|katıl(?:ım)?|gir|girin|girer misin|girecek misin|hadi)\b",
+                " ",
+                candidate,
+            )
+
+    candidate = re.sub(r"^[\"']+|[\"']+$", "", candidate).strip()
+    candidate = re.sub(
+        r"\b(şimdi|hemen|katıl(?:ım)?|gir|girin|hadi|beni|bir|de|da|lütfen)\b",
+        " ",
+        candidate,
+    )
+    candidate = re.sub(r"\s+", " ", candidate).strip(" ,.:;!?-_'\"")
+    return candidate
+
+
+def _is_generic_manual_join_query(query: str) -> bool:
+    normalized = _normalize_manual_join_text(query)
+    if not normalized:
+        return True
+
+    generic_queries = {
+        "ders",
+        "derse",
+        "dersine",
+        "canli ders",
+        "canlı ders",
+        "online ders",
+        "toplanti",
+        "toplantı",
+    }
+    return normalized in generic_queries
+
+
+def _normalize_course_name(name: str) -> str:
+    normalized = _normalize_manual_join_text(name)
+    normalized = re.sub(r"[^0-9a-zçğıöşü\s]", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _rank_manual_join_matches(query: str, matches: list[object]) -> list[tuple[int, object]]:
+    query_norm = _normalize_course_name(query)
+    query_tokens = set(query_norm.split())
+    ranked: list[tuple[int, object]] = []
+
+    for course in matches:
+        name = getattr(course, "name", "")
+        name_norm = _normalize_course_name(name)
+        name_tokens = set(name_norm.split())
+
+        score = 0
+        if query_norm == name_norm:
+            score += 200
+        if query_norm and query_norm in name_norm:
+            score += 120
+        if name_norm and name_norm in query_norm:
+            score += 80
+
+        overlap = len(query_tokens & name_tokens)
+        if overlap:
+            score += overlap * 25
+
+        if query_tokens and query_tokens <= name_tokens:
+            score += 40
+
+        if getattr(course, "is_active", False):
+            score += 5
+
+        ranked.append((score, course))
+
+    ranked.sort(key=lambda item: (item[0], len(getattr(item[1], "name", ""))), reverse=True)
+    return ranked
+
+
+def _pick_manual_join_target(query: str, matches: list[object]) -> tuple[object | None, list[object]]:
+    ranked = _rank_manual_join_matches(query, matches)
+    if not ranked:
+        return None, []
+
+    top_score = ranked[0][0]
+    plausible = [course for score, course in ranked if score > 0 and score >= top_score - 20]
+    if top_score < 25:
+        return None, plausible
+    if len(plausible) == 1:
+        return plausible[0], plausible
+    return None, plausible
+
+
+async def _start_manual_join_for_course(update: Update, user_id: int, course, dys_url: str | None) -> None:
+    if not update.message:
+        return
+
+    if not dys_url and not course.direct_url:
+        await update.message.reply_text(
+            "❌ Bu ders için DYS adresi veya direkt canlı ders bağlantısı bulunamadı. "
+            "Önce /upload_schedule ile programı güncellediğinden emin ol."
+        )
+        return
+
+    from src.scheduler.tasks import attend_lesson_task
+
+    attend_lesson_task.delay(
+        user_id=user_id,
+        course_id=str(course.id),
+        course_name=course.name,
+        dys_url=dys_url or "",
+        end_time=course.end_time.strftime("%H:%M"),
+        direct_url=course.direct_url,
+        dys_search_hint=getattr(course, "dys_search_hint", None),
+    )
+
+    inv_days = {v: k for k, v in DAYS_TR.items()}
+    safe_name = escape_dynamic_text(course.name, parse_mode="Markdown")
+    day_name = inv_days.get(course.day_of_week, "?")
+    await update.message.reply_text(
+        "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum.\n\n"
+        f"📚 **{safe_name}**\n"
+        f"📅 {day_name} {course.start_time.strftime('%H:%M')}-{course.end_time.strftime('%H:%M')}\n\n"
+        "Birkaç dakika içinde ekran görüntüleri veya bildirimler gelmeye başlamazsa, "
+        "VPS üzerinde worker loglarını kontrol edebilirsin "
+        "(`docker compose -f docker-compose.dev.yml logs -f worker`).",
+        parse_mode="Markdown",
+    )
+
+
 async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Normal metin mesajlarını agent chat olarak ele al.
@@ -182,23 +329,12 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if any(kw in lowered for kw in ["evet", "tamam", "şimdi gir", "hemen gir"]) and not any(
             kw in lowered for kw in ["değil", "istemiyorum", "boşver"]
         ):
-            from src.scheduler.tasks import attend_lesson_task
-
-            attend_lesson_task.delay(
-                user_id=user.id,
-                course_id=pending["course_id"],
-                course_name=pending["course_name"],
-                dys_url=pending["dys_url"],
-                end_time=pending["end_time"],
-                direct_url=pending["direct_url"],
-                dys_search_hint=pending["dys_search_hint"],
-            )
-            context.user_data.pop("pending_manual_join", None)
-            await update.message.reply_text(
-                "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum. "
-                "Birazdan ekran görüntüleriyle ne yaptığımı haber veririm."
-            )
-            return
+            if pending.get("status") != "single_target":
+                await update.message.reply_text(
+                    "Hangi dersi kastettiğini ders adını yazarak netleştirir misin?\n"
+                    'Örnek: "Kariyer Planlama dersine şimdi gir"'
+                )
+                return
 
         if any(kw in lowered for kw in ["boşver", "iptal", "vazgeç"]):
             context.user_data.pop("pending_manual_join", None)
@@ -232,6 +368,15 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             }
             for c in courses
         ]
+
+        if pending and pending.get("status") == "ambiguous":
+            candidate_ids = set(pending.get("candidate_ids") or [])
+            candidate_courses = [course for course in courses if str(course.id) in candidate_ids]
+            target, _ = _pick_manual_join_target(text, candidate_courses)
+            if target is not None:
+                context.user_data.pop("pending_manual_join", None)
+                await _start_manual_join_for_course(update, user.id, target, dys_url)
+                return
 
         intent = _detect_intent(text)
 
@@ -299,28 +444,32 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             return
 
+        if pending and pending.get("status") == "single_target":
+            selected_pending_course = next(
+                (course for course in courses if str(course.id) == pending.get("course_id")),
+                None,
+            )
+            if selected_pending_course:
+                context.user_data.pop("pending_manual_join", None)
+                await _start_manual_join_for_course(
+                    update,
+                    user.id,
+                    selected_pending_course,
+                    pending.get("dys_url") or dys_url,
+                )
+                return
+
         # ── Intent: Belirli ders için manuel derse katılma isteği ──
         if intent == "manual_join_request":
-            # Basit bir şekilde \"dersine\" veya \"derse\" öncesini ders adı sorgusu olarak almayı dene.
-            lowered = text.lower()
-            course_name_query = text
-            m = re.search(r"(.+?)\s+dersine", lowered) or re.search(r"(.+?)\s+derse", lowered)
-            if m:
-                # Orijinal metinden aynı dilim (\"dersine/derse\" kısmını at)
-                end_idx = m.start()  # \"dersine/derse\" başlangıcına kadar
-                course_name_query = text[:end_idx].strip()
-
-            name_q = course_name_query.strip()
-            if not name_q:
+            name_q = _extract_manual_join_course_query(text)
+            if _is_generic_manual_join_query(name_q):
                 await update.message.reply_text(
-                    "Hangi ders için hemen derse girmemi istediğini biraz daha açık yazar mısın? "
+                    "Hangi ders için hemen derse girmemi istediğini biraz daha açık yazar mısın?\n"
                     'Örnek: "Kariyer Planlama dersine şimdi gir"'
                 )
                 return
 
-            matches = await course_repo.find_by_name(
-                user.id, name_q, active_only=True, limit=5
-            )
+            matches = await course_repo.find_by_name(user.id, name_q, active_only=True, limit=5)
             if not matches:
                 await update.message.reply_text(
                     f"❌ \"{escape_dynamic_text(name_q, parse_mode='Markdown')}\" ile eşleşen ders bulamadım. /courses ile kontrol edebilirsin.",
@@ -328,40 +477,32 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 )
                 return
 
-            target = matches[0]
-            inv_days = {v: k for k, v in DAYS_TR.items()}
-            safe_name = escape_dynamic_text(target.name, parse_mode="Markdown")
-            day_name = inv_days.get(target.day_of_week, "?")
+            target, plausible = _pick_manual_join_target(name_q, matches)
+            if target is None:
+                if plausible:
+                    context.user_data["pending_manual_join"] = {
+                        "status": "ambiguous",
+                        "query": name_q,
+                        "candidate_ids": [str(course.id) for course in plausible[:3]],
+                    }
+                    options = "\n".join(
+                        f'- "{escape_dynamic_text(course.name, parse_mode="Markdown")}"'
+                        for course in plausible[:3]
+                    )
+                    await update.message.reply_text(
+                        "Birden fazla uygun ders buldum. Lütfen ders adını daha net yaz:\n"
+                        f"{options}",
+                        parse_mode="Markdown",
+                    )
+                    return
 
-            if not dys_url and not target.direct_url:
                 await update.message.reply_text(
-                    "❌ Bu ders için DYS adresi veya direkt canlı ders bağlantısı bulunamadı. "
-                    "Önce /upload_schedule ile programı güncellediğinden emin ol."
+                    "Hangi dersi kastettiğini anlayamadım. Ders adını açıkça yazar mısın?\n"
+                    'Örnek: "Kariyer Planlama dersine şimdi gir"'
                 )
                 return
 
-            from src.scheduler.tasks import attend_lesson_task
-
-            attend_lesson_task.delay(
-                user_id=user.id,
-                course_id=str(target.id),
-                course_name=target.name,
-                dys_url=dys_url or "",
-                end_time=target.end_time.strftime("%H:%M"),
-                direct_url=target.direct_url,
-                dys_search_hint=getattr(target, "dys_search_hint", None),
-            )
-
-            await update.message.reply_text(
-                "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum.\n\n"
-                f"📚 **{safe_name}**\n"
-                f"📅 {day_name} {target.start_time.strftime('%H:%M')}-"
-                f"{target.end_time.strftime('%H:%M')}\n\n"
-                "Birkaç dakika içinde ekran görüntüleri veya bildirimler gelmeye "
-                "başlamazsa, VPS üzerinde worker loglarını kontrol edebilirsin "
-                "(`docker compose -f docker-compose.dev.yml logs -f worker`).",
-                parse_mode="Markdown",
-            )
+            await _start_manual_join_for_course(update, user.id, target, dys_url)
             return
 
         # Kullanıcıya hızlı geri bildirim (LLM tabanlı akışlar için)
@@ -729,9 +870,7 @@ KURALLAR:
                 if not name_q:
                     raise ValueError("course_name_query gerekli")
 
-                matches = await course_repo.find_by_name(
-                    user.id, name_q, active_only=True, limit=5
-                )
+                matches = await course_repo.find_by_name(user.id, name_q, active_only=True, limit=5)
                 if not matches:
                     await _safe_delete(processing)
                     await update.message.reply_text(
@@ -740,41 +879,32 @@ KURALLAR:
                     )
                     return
 
-                target = matches[0]
-
-                if not dys_url and not target.direct_url:
+                target, plausible = _pick_manual_join_target(name_q, matches)
+                if target is None:
                     await _safe_delete(processing)
-                    await update.message.reply_text(
-                        "❌ Bu ders için DYS adresi veya direkt canlı ders bağlantısı bulunamadı. "
-                        "Önce /upload_schedule ile programı güncellediğinden emin ol."
-                    )
+                    if plausible:
+                        options = "\n".join(
+                            f'- "{escape_dynamic_text(course.name, parse_mode="Markdown")}"'
+                            for course in plausible[:3]
+                        )
+                        context.user_data["pending_manual_join"] = {
+                            "status": "ambiguous",
+                            "query": name_q,
+                            "candidate_ids": [str(course.id) for course in plausible[:3]],
+                        }
+                        await update.message.reply_text(
+                            "Birden fazla uygun ders buldum. Lütfen ders adını daha net yaz:\n"
+                            f"{options}",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        await update.message.reply_text(
+                            "Hangi dersi kastettiğini anlayamadım. Ders adını açıkça yazar mısın?"
+                        )
                     return
 
-                from src.scheduler.tasks import attend_lesson_task
-
-                attend_lesson_task.delay(
-                    user_id=user.id,
-                    course_id=str(target.id),
-                    course_name=target.name,
-                    dys_url=dys_url or "",
-                    end_time=target.end_time.strftime("%H:%M"),
-                    direct_url=target.direct_url,
-                    dys_search_hint=getattr(target, "dys_search_hint", None),
-                )
-
-                safe_name = escape_dynamic_text(target.name, parse_mode="Markdown")
-                day_name = inv_days.get(target.day_of_week, "?")
                 await _safe_delete(processing)
-                await update.message.reply_text(
-                    "Tamam, bu ders için hemen derse katılım oturumu başlatıyorum.\n\n"
-                    f"📚 **{safe_name}**\n"
-                    f"📅 {day_name} {target.start_time.strftime('%H:%M')}-"
-                    f"{target.end_time.strftime('%H:%M')}\n\n"
-                    "Birkaç dakika içinde ekran görüntüleri veya bildirimler gelmeye "
-                    "başlamazsa, VPS üzerinde worker loglarını kontrol edebilirsin "
-                    "(`docker compose -f docker-compose.dev.yml logs -f worker`).",
-                    parse_mode="Markdown",
-                )
+                await _start_manual_join_for_course(update, user.id, target, dys_url)
                 return
 
             if tool == "cancel_active_session":

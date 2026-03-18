@@ -9,6 +9,19 @@
 
 ## 📋 İçindekiler
 
+## Operasyonel Not
+
+Bu dosya mimari kararların ana kaynağıdır. Kurulum ve günlük kullanım için aşağıdaki dosyalar canonical kabul edilmelidir:
+
+- `README.md`
+- `docs/SETUP.md`
+- `scripts/setup.ps1`
+- `scripts/setup.sh`
+- `scripts/dev.ps1`
+- `scripts/dev.sh`
+
+Günlük geliştirme akışı için ham `docker compose ...` komutları yerine wrapper scriptleri tercih edilmelidir. Bu repo artık yeni gelen bir kullanıcının önce `setup`, sonra `dev` komutlarıyla ilerlemesini hedefler.
+
 1. [Proje Vizyonu](#1-proje-vizyonu)
 2. [Sistem Mimarisi](#2-sistem-mimarisi)
 3. [Klasör Yapısı](#3-klasör-yapısı)
