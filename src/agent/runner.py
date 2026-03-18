@@ -241,6 +241,11 @@ class AgentRunner:
 
     def _parse_result(self, raw_result) -> dict:
         """Agent sonucunu parse et ve hata kodlarını exception'a çevir."""
+        
+        # Eğer Playwright çökmesi veya agent hatası sebebiyle hiç adım işlenmediyse empty history döner.
+        if hasattr(raw_result, "all_results") and not raw_result.all_results:
+            raise AgentJoinFailed("Tarayıcı yüklenemedi veya Agent başlatılamadı. Lütfen sunucu loglarını kontrol edin.")
+            
         result_text = str(raw_result)
 
         error_map = {

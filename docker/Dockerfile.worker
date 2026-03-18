@@ -16,8 +16,8 @@ RUN pip install poetry==1.8.3 && \
     poetry config virtualenvs.create false && \
     poetry install --no-interaction --without dev
 
-# Playwright browser
-RUN playwright install chromium && playwright install-deps chromium
+# Sadece bağımlılıkları root olarak kur
+RUN playwright install-deps chromium
 
 COPY src/ ./src/
 
@@ -26,6 +26,9 @@ RUN useradd -m -u 1000 ghostuser && \
     mkdir -p /app/screenshots /app/logs && \
     chown -R ghostuser:ghostuser /app
 USER ghostuser
+
+# Playwright tarayıcısını ghostuser olarak kur ki binaries /home/ghostuser/.cache/... içine insin
+RUN playwright install chromium
 
 # Celery worker olarak çalıştır
 CMD ["celery", "-A", "src.scheduler.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
