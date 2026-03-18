@@ -16,6 +16,7 @@ class RuntimeObserver:
         self.notifier = notifier
         self.session_repo = session_repo
         self.state_store = state_store
+        self._emitted_events: set[str] = set()
 
     async def record_decision(self, session_id: str, entry: dict) -> None:
         if self.state_store is not None:
@@ -46,3 +47,37 @@ class RuntimeObserver:
                 checkpoint_name="runtime",
                 session_id=session_id,
             )
+
+    async def send_runtime_message(
+        self,
+        *,
+        user_id: int,
+        text: str,
+    ) -> None:
+        if self.notifier:
+            await self.notifier.send_message(user_id=user_id, text=text)
+
+    async def emit_progress(
+        self,
+        *,
+        event_key: str,
+        user_id: int,
+        session_id: str,
+        caption: str,
+        screenshot_bytes: bytes | None = None,
+    ) -> None:
+        """Emit a progress update at most once per event key."""
+        if event_key in self._emitted_events:
+            return
+        self._emitted_events.add(event_key)
+
+        if screenshot_bytes:
+            await self.send_runtime_screenshot(
+                user_id=user_id,
+                session_id=session_id,
+                screenshot_bytes=screenshot_bytes,
+                caption=caption,
+            )
+            return
+
+        await self.send_runtime_message(user_id=user_id, text=caption)

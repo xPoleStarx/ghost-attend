@@ -18,6 +18,7 @@ from src.agent.scenarios import RecoveryAction, ScenarioHandler, ScenarioType
 from src.agent.strategies.base import BaseDYSStrategy
 from src.core.config import settings
 from src.core.exceptions import (
+    AgentBrowserEnvironmentError,
     AgentJoinFailed,
     AgentLoginFailed,
     AgentLinkNotFound,
@@ -329,6 +330,30 @@ class SessionOrchestrator:
                     except Exception:
                         return {"status": "error", "error": "credential_error"}
                 continue
+
+            except AgentBrowserEnvironmentError as e:
+                log.error(
+                    "orchestrator.browser_environment_error",
+                    session_id=self.session_id,
+                    error=str(e),
+                )
+                if self.notifier:
+                    await self.notifier.send_message(
+                        user_id=self.user_id,
+                        text=f"Tarayici baslatilamadi.\n{str(e)}",
+                    )
+                if self.session_repo and self.session_uuid:
+                    try:
+                        await self.session_repo.update_status(
+                            self.session_uuid, "failed", failure_reason="browser_environment_error"
+                        )
+                    except Exception as ex:
+                        log.warning("orchestrator.session_status_update_failed", error=str(ex))
+                return {
+                    "status": "fatal_error",
+                    "error": "browser_environment_error",
+                    "failure_reason": str(e),
+                }
 
             except (AgentPageFrozen, AgentJoinFailed, MeetingNotStarted) as e:
                 # Retryable hatalar

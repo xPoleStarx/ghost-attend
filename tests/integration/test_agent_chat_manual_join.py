@@ -129,6 +129,36 @@ async def test_handler_starts_manual_session_from_tool_call(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handler_starts_manual_session_from_prefix_join_phrase(monkeypatch):
+    from src.bot.handlers import agent_chat
+
+    course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama")
+    _install_common_patches(monkeypatch, [course])
+    fake_task = _install_fake_task(monkeypatch)
+
+    sent_messages: list[str] = []
+    await agent_chat.handle_agent_chat(FakeUpdate("hadi kariyer planlama dersine gir", sent_messages), FakeContext())
+
+    assert fake_task.calls
+    assert fake_task.calls[0]["course_id"] == course.id
+
+
+@pytest.mark.asyncio
+async def test_handler_starts_manual_session_from_suffix_join_phrase(monkeypatch):
+    from src.bot.handlers import agent_chat
+
+    course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama")
+    _install_common_patches(monkeypatch, [course])
+    fake_task = _install_fake_task(monkeypatch)
+
+    sent_messages: list[str] = []
+    await agent_chat.handle_agent_chat(FakeUpdate("derse gir hadi kariyer planlama dersine", sent_messages), FakeContext())
+
+    assert fake_task.calls
+    assert fake_task.calls[0]["course_id"] == course.id
+
+
+@pytest.mark.asyncio
 async def test_handler_answers_runtime_question(monkeypatch):
     from src.bot.handlers import agent_chat
 

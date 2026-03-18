@@ -42,6 +42,17 @@ class RuntimeEngine:
     async def attach(self, browser_session) -> None:
         self.browser_service.attach_session(browser_session)
         await self._heartbeat(status="SESSION_STARTING")
+        try:
+            image = await self.browser_service.screenshot(self.session_id)
+        except Exception:
+            image = None
+        await self.observer.emit_progress(
+            event_key="runtime_starting",
+            user_id=self.user_id,
+            session_id=self.session_id,
+            caption="Tarayici acildi. Derse giris surecini baslatiyorum.",
+            screenshot_bytes=image,
+        )
 
     async def detach(self) -> None:
         self.browser_service.detach_session(self.session_id)
@@ -89,6 +100,7 @@ class RuntimeEngine:
             snapshot = await self.browser_service.snapshot(self.session_id)
             self.state_store.latest_snapshot = snapshot
             await self._heartbeat(status=self.state_store.fsm_state)
+            await self._emit_runtime_progress(snapshot)
 
             planner_payload = await self.planner.plan(
                 goal=goal,
@@ -119,6 +131,7 @@ class RuntimeEngine:
                     raise AgentJoinFailed("Runtime attempted to finish without join proof.")
                 self.state_store.fsm_state = "SESSION_ACTIVE"
                 await self._heartbeat(status="SESSION_ACTIVE")
+                await self._emit_joined_progress()
                 return {"status": "completed", "raw": planner_payload.get("reason") or "completed"}
             if tool_name == "fail":
                 raise AgentJoinFailed(planner_payload.get("reason") or "runtime planner failed")
@@ -138,6 +151,9 @@ class RuntimeEngine:
             if self._has_completion_proof(after):
                 self.state_store.joined_confirmed = True
                 self.state_store.fsm_state = "SESSION_ACTIVE"
+                await self._emit_joined_progress()
+            else:
+                await self._emit_runtime_progress(after)
             await self._heartbeat(status=self.state_store.fsm_state)
 
         raise AgentJoinFailed("Runtime exceeded the maximum number of planner steps.")
@@ -286,3 +302,53 @@ class RuntimeEngine:
                 )
                 if command.command_type == "cancel":
                     raise
+
+    async def _emit_runtime_progress(self, snapshot) -> None:
+        if snapshot is None:
+            return
+
+        signals = snapshot.page_signals or {}
+        try:
+            screenshot_bytes = await self.browser_service.screenshot(self.session_id)
+        except Exception:
+            screenshot_bytes = None
+
+        if signals.get("login_form_detected"):
+            await self.observer.emit_progress(
+                event_key="runtime_login_form",
+                user_id=self.user_id,
+                session_id=self.session_id,
+                caption="Giris ekrani gorunuyor. Oturum acmayi deniyorum.",
+                screenshot_bytes=screenshot_bytes,
+            )
+
+        if signals.get("mfa_prompt_detected"):
+            await self.observer.emit_progress(
+                event_key="runtime_mfa_prompt",
+                user_id=self.user_id,
+                session_id=self.session_id,
+                caption="Dogrulama ekrani gorunuyor. Gerekirse senden MFA onayi isteyecegim.",
+                screenshot_bytes=screenshot_bytes,
+            )
+
+        if signals.get("meeting_ui_detected"):
+            await self.observer.emit_progress(
+                event_key="runtime_meeting_ui",
+                user_id=self.user_id,
+                session_id=self.session_id,
+                caption="Ders veya meeting arayuzu bulundu. Join adimina geciyorum.",
+                screenshot_bytes=screenshot_bytes,
+            )
+
+    async def _emit_joined_progress(self) -> None:
+        try:
+            screenshot_bytes = await self.browser_service.screenshot(self.session_id)
+        except Exception:
+            screenshot_bytes = None
+        await self.observer.emit_progress(
+            event_key="runtime_joined",
+            user_id=self.user_id,
+            session_id=self.session_id,
+            caption="Derse baglanti tamamlandi. Oturum aktif gorunuyor.",
+            screenshot_bytes=screenshot_bytes,
+        )

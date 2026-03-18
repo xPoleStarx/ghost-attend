@@ -10,6 +10,7 @@ architecture.md Section 11.3
 import asyncio
 from datetime import datetime, time, timedelta, timezone
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.redis import RedisJobStore
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
 
 # APScheduler persistence — Redis job store
 _scheduler: AsyncIOScheduler | None = None
+_DAY_NAMES_BY_INDEX = {value: key for key, value in DAYS_TR.items()}
 
 
 def _maybe_start_scheduler(scheduler: AsyncIOScheduler, *, paused: bool = True) -> bool:
@@ -101,7 +103,7 @@ def get_scheduler() -> AsyncIOScheduler:
 
         _scheduler = AsyncIOScheduler(
             jobstores=jobstores,
-            timezone="Europe/Istanbul",
+            timezone="UTC",
             job_defaults={
                 "coalesce": True,       # Kaçırılan job'ları birleştir
                 "max_instances": 1,      # Aynı job max 1 instance
@@ -132,6 +134,37 @@ def _get_cron_day_of_week(day_tr: str) -> str:
     return day_map.get(day_tr, "mon")
 
 
+def _resolve_timezone(timezone_name: str | None) -> ZoneInfo:
+    """Resolve a timezone name safely with a stable fallback."""
+    try:
+        return ZoneInfo(timezone_name or "Europe/Istanbul")
+    except Exception:
+        return ZoneInfo("Europe/Istanbul")
+
+
+def _compute_trigger_day_and_time(
+    *,
+    day: str,
+    start_time: str,
+    early_minutes: int,
+    timezone_name: str,
+) -> tuple[str, time]:
+    """Compute the trigger day/time in the user's local timezone."""
+    tz = _resolve_timezone(timezone_name)
+    course_day_index = DAYS_TR.get(day, 0)
+    start = _parse_time(start_time)
+
+    reference_monday = datetime(2024, 1, 1, tzinfo=tz)
+    course_dt = reference_monday + timedelta(
+        days=course_day_index,
+        hours=start.hour,
+        minutes=start.minute,
+    )
+    trigger_dt = course_dt - timedelta(minutes=early_minutes)
+    trigger_day = _DAY_NAMES_BY_INDEX.get(trigger_dt.weekday(), day)
+    return trigger_day, trigger_dt.timetz().replace(tzinfo=None)
+
+
 async def schedule_course(
     user_id: int,
     course_id: str,
@@ -143,6 +176,7 @@ async def schedule_course(
     direct_url: str | None = None,
     dys_search_hint: str | None = None,
     early_minutes: int = 5,
+    timezone_name: str = "Europe/Istanbul",
 ) -> str:
     """
     Bir ders için haftalık tekrarlayan job oluştur.
@@ -153,13 +187,13 @@ async def schedule_course(
     """
     scheduler = get_scheduler()
 
-    # Başlangıç saatinden early_minutes dk çıkar
-    start = _parse_time(start_time)
-    trigger_dt = datetime.combine(datetime.today(), start) - timedelta(minutes=early_minutes)
-    trigger_time = trigger_dt.time()
-
-    # Cron day
-    cron_day = _get_cron_day_of_week(day)
+    trigger_day, trigger_time = _compute_trigger_day_and_time(
+        day=day,
+        start_time=start_time,
+        early_minutes=early_minutes,
+        timezone_name=timezone_name,
+    )
+    cron_day = _get_cron_day_of_week(trigger_day)
 
     job_id = f"course_{user_id}_{course_id}"
 
@@ -176,7 +210,7 @@ async def schedule_course(
             minute=trigger_time.minute,
             # CronTrigger default timezone'u bazı ortamlarda sistem tz (Etc/UTC) olabiliyor.
             # Scheduler timezone'u ile tutarlı olması için açıkça set et.
-            timezone=scheduler.timezone,
+            timezone=_resolve_timezone(timezone_name),
         ),
         id=job_id,
         name=f"{course_name} ({day} {start_time})",
@@ -198,10 +232,12 @@ async def schedule_course(
         job_id=job_id,
         course=course_name,
         day=day,
+        trigger_day=trigger_day,
         trigger=f"{trigger_time.hour:02d}:{trigger_time.minute:02d}",
         start=start_time,
         user_id=user_id,
         early_minutes=early_minutes,
+        timezone=timezone_name,
     )
 
     return job_id
@@ -334,6 +370,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
     from src.db.connection import get_session
     from src.db.repositories.credential import CredentialRepository
     from src.db.repositories.course import CourseRepository
+    from src.db.repositories.user import UserRepository
 
     # day_of_week (int) → Türkçe gün adı
     day_int_to_name = {v: k for k, v in DAYS_TR.items()}
@@ -341,6 +378,10 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
     job_ids = []
 
     async with get_session() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_id(user_id)
+        user_timezone = getattr(user, "timezone", None) or "Europe/Istanbul"
+
         cred_repo = CredentialRepository(session)
         dys_url = await cred_repo.get_dys_url_for_user(user_id)
         if not dys_url:
@@ -405,6 +446,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
                 direct_url=course.direct_url,
                 dys_search_hint=getattr(course, "dys_search_hint", None),
                 early_minutes=settings.MEETING_START_OFFSET_MINUTES,
+                timezone_name=user_timezone,
             )
             job_ids.append(job_id)
 
@@ -413,6 +455,7 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
         user_id=user_id,
         count=len(job_ids),
         job_ids=job_ids,
+        timezone=user_timezone,
     )
 
     # Bot gibi non-scheduler process'lerde scheduler instance'ı çalışır bırakma.

@@ -94,6 +94,59 @@ async def test_session_start_tool_dispatches_attend_task():
 
 
 @pytest.mark.asyncio
+async def test_session_start_tool_cleans_join_filler_words_before_lookup():
+    course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama", time(10, 0), time(11, 0))
+
+    class FakeCourseRepo:
+        def __init__(self):
+            self.queries = []
+
+        async def find_by_name(self, user_id: int, query: str, active_only: bool = True, limit: int = 5):
+            self.queries.append(query)
+            return [course]
+
+    class FakeCredRepo:
+        async def get_dys_url_for_user(self, user_id: int):
+            return "https://dys.example.com"
+
+    class FakeSessionRepo:
+        async def get_active_session(self, user_id: int):
+            return None
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeTask:
+        def __init__(self):
+            self.calls = []
+
+        def delay(self, **kwargs):
+            self.calls.append(kwargs)
+
+    fake_task = FakeTask()
+    repo = FakeCourseRepo()
+    registry = ConversationToolRegistry(
+        user_id=123,
+        session=FakeSession(),
+        course_repo=repo,
+        credential_repo=FakeCredRepo(),
+        session_repo=FakeSessionRepo(),
+        attend_task=fake_task,
+    )
+
+    result = await registry.execute(
+        "session.start",
+        {"course_name_query": "derse gir hadi kariyer planlama dersine"},
+        {"message_text": "derse gir hadi kariyer planlama dersine", "courses": [course]},
+    )
+
+    assert result.ok is True
+    assert fake_task.calls
+    assert "kariyer planlama" in repo.queries
+
+
+@pytest.mark.asyncio
 async def test_courses_update_uses_single_course_and_preserves_duration():
     course = DummyCourse("11111111-1111-1111-1111-111111111111", "Kariyer Planlama", time(18, 0), time(18, 45))
 
@@ -283,6 +336,49 @@ def test_policy_routes_explicit_join_to_start_tool():
     )
     assert decision.tool_name == "session.start"
     assert decision.tool_args["course_name_query"] == "kariyer planlama"
+
+
+def test_policy_extracts_course_from_prefix_join_phrase():
+    decision = decide_policy(
+        message_text="hadi kariyer planlama dersine gir",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={},
+    )
+    assert decision.tool_name == "session.start"
+    assert decision.tool_args["course_name_query"] == "kariyer planlama"
+
+
+def test_policy_extracts_course_from_suffix_join_phrase():
+    decision = decide_policy(
+        message_text="derse gir hadi kariyer planlama dersine",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={},
+    )
+    assert decision.tool_name == "session.start"
+    assert decision.tool_args["course_name_query"] == "kariyer planlama"
+
+
+def test_policy_keeps_generic_join_ambiguous_for_multiple_courses():
+    decision = decide_policy(
+        message_text="derse gir",
+        courses=[{"name": "Kariyer Planlama"}, {"name": "Veri Yapilari"}],
+        attachments=[],
+        conversation_state={},
+    )
+    assert decision.requires_clarification is True
+
+
+def test_policy_starts_single_course_for_generic_join():
+    decision = decide_policy(
+        message_text="derse gir",
+        courses=[{"name": "Kariyer Planlama"}],
+        attachments=[],
+        conversation_state={},
+    )
+    assert decision.tool_name == "session.start"
+    assert decision.tool_args["course_name_query"] == "Kariyer Planlama"
 
 
 def test_policy_routes_single_course_time_change_to_courses_update():

@@ -5,13 +5,25 @@ Ders CRUD işlemleri.
 """
 
 import uuid
-from datetime import time
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 
 from src.db.models import Course
+
+
+def _coerce_end_time(end_time_value: str | None, start_time: time) -> time:
+    """Parse end time, or fall back to a one-hour slot when the parser couldn't infer it."""
+    if end_time_value:
+        return time.fromisoformat(end_time_value)
+
+    start_dt = datetime.combine(date.min, start_time)
+    fallback_dt = start_dt + timedelta(hours=1)
+    if fallback_dt.date() != date.min:
+        return time(23, 59)
+    return fallback_dt.time()
 
 
 class CourseRepository:
@@ -136,7 +148,7 @@ class CourseRepository:
             name = pc["ders_adi"]
             day_of_week = DAYS_TR.get(pc["gun"], 0)
             start_time = time.fromisoformat(pc["baslangic_saati"])
-            end_time = time.fromisoformat(pc["bitis_saati"])
+            end_time = _coerce_end_time(pc.get("bitis_saati"), start_time)
 
             rows.append(
                 {

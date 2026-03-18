@@ -1,19 +1,24 @@
 # Tetikleme (T-5dk) Smoke Test Checklist (Dev/Prod)
 
-Bu doküman, **yakın zamana ayarlı bir ders** ile uçtan uca akışı doğrulamak için hazırlanmıştır:
+Bu dokuman, yakin zamana ayarli bir ders ile uctan uca akis dogrulamak icin hazirlandi:
 
-- Bot: dersi zamanlar (APScheduler jobstore → Redis **db=1**)
-- Scheduler: job’u restore eder ve tetikler
-- Worker: Celery task’ını alır, oturumu başlatır
-- Telegram: reminder + screenshot/checkpoint mesajlarını görürsün
+- Bot: dersi zamanlar (APScheduler jobstore -> Redis `db=1`)
+- Scheduler: job'u restore eder ve tetikler
+- Worker: Celery task'ini alir, oturumu baslatir
+- Telegram: reminder + screenshot/checkpoint mesajlarini gorursun
 
-## 0) Ön Koşullar
+## 0) On Kosullar
 
-- Telegram botun çalışıyor (komutlara cevap veriyor)
-- `.env` dosyan doğru (Telegram token, provider key, DB/Redis ayarları)
-- İlgili stack **tek bir compose projesi** altında koşuyor (dev ve prod aynı anda aynı isimle koşmuyor)
+- Telegram botun calisiyor (komutlara cevap veriyor)
+- `.env` dosyan dogru (Telegram token, provider key, DB/Redis ayarlari)
+- Ilgili stack tek bir compose projesi altinda kosuyor (dev ve prod ayni anda ayni isimle kosmuyor)
+- Kullanicinin timezone bilgisi dogru ayarli:
 
-## 1) Stack’i temiz ve deterministik başlat
+```text
+/timezone Europe/Istanbul
+```
+
+## 1) Stack'i temiz ve deterministik baslat
 
 ### Dev (hot-reload)
 
@@ -35,40 +40,41 @@ docker compose -f docker-compose.yml ps
 
 Beklenen servisler: `bot`, `scheduler`, `worker`, `postgres`, `redis` (opsiyonel `nginx`).
 
-## 2) Sağlık kontrolü (scheduler heartbeat)
+## 2) Saglik kontrolu (scheduler heartbeat)
 
-Telegram’da:
+Telegram'da:
 
-- `/health` komutunu gönder
-- Beklenen: `scheduler_heartbeat: evet` benzeri bir çıktı
+- `/health` komutunu gonder
+- Beklenen: `scheduler_heartbeat: evet` benzeri bir cikti
 
-Sorun varsa hızlı bakış:
+Sorun varsa hizli bakis:
 
 ```powershell
 docker compose -f docker-compose.dev.yml logs --tail 200 scheduler bot
 ```
 
-> Prod için `docker-compose.yml` ile aynı komutu çalıştır.
+Prod icin `docker-compose.yml` ile ayni komutu calistir.
 
-## 3) Jobstore doğrulaması (Redis db=1)
+## 3) Jobstore dogrulamasi (Redis db=1)
 
-Telegram’da:
+Telegram'da:
 
-- `/status` komutunu gönder
+- `/status` komutunu gonder
 - Beklenen:
-  - Scheduler job sayısı **0’dan büyük** (en azından “kayıtlı ders” varken)
+  - Scheduler job sayisi 0'dan buyuk
   - `bot.status_job_list_failed` benzeri hata yok
+  - `next_run` kullanicinin kendi timezone'una gore anlamli gorunuyor
 
-Redis’te kaba doğrulama:
+Redis'te kaba dogrulama:
 
-### Dev (redis şifresiz)
+### Dev (redis sifresiz)
 
 ```powershell
 docker compose -f docker-compose.dev.yml exec redis redis-cli -n 1 DBSIZE
 docker compose -f docker-compose.dev.yml exec redis redis-cli -n 1 KEYS "*apscheduler*"
 ```
 
-### Prod (redis şifreli)
+### Prod (redis sifreli)
 
 ```powershell
 docker compose -f docker-compose.yml exec redis redis-cli -a $env:REDIS_PASSWORD -n 1 DBSIZE
@@ -77,27 +83,29 @@ docker compose -f docker-compose.yml exec redis redis-cli -a $env:REDIS_PASSWORD
 
 Notlar:
 
-- `DBSIZE` **0** ise scheduler jobstore’a yazmıyor ya da “ders/job” yok.
-- `KEYS` çıktısı ortama göre değişebilir; amaç db=1’in boş olmadığını görmek.
+- `DBSIZE` 0 ise scheduler jobstore'a yazmiyor ya da ders/job yok.
+- `KEYS` ciktisi ortama gore degisebilir; amac db=1'in bos olmadigini gormek.
 
 ## 4) T-5dk tetikleme senaryosu (esas smoke test)
 
-Amaç: **Şu andan 5–7 dakika sonraya** bir ders ayarlayıp tetiklemeyi gözlemek.
+Amac: Su andan 5-7 dakika sonraya bir ders ayarlayip tetiklemeyi gozlemek.
 
-### 4.1 Test verisini hazırla
+### 4.1 Test verisini hazirla
 
-Aşağıdaki iki yoldan birini seç:
+Asagidaki iki yoldan birini sec:
 
-- **Yol A (önerilen)**: Telegram’da `/upload_schedule` ile **tek derslik**, saati 5–7 dk sonra olan bir program yükle.
-- **Yol B**: Mevcut bir dersi (varsa) “yakın zamana” çekecek şekilde güncelle (projedeki agent akışı bunu destekliyorsa).
+- Yol A (onerilen): Telegram'da `/upload_schedule` ile tek derslik, saati 5-7 dk sonra olan bir program yukle.
+- Yol B: Mevcut bir dersi yakin zamana cekecek sekilde guncelle.
 
-### 4.2 Beklenen akış (zaman çizelgesi)
+### 4.2 Beklenen akis (zaman cizelgesi)
 
-- **T-5 dk civarı**: Telegram’da reminder/hatırlatma mesajı
-- **T-0 civarı**: Worker tarafında `attend`/`join` benzeri task başlangıcı
-- **T+0..T+2 dk**: Telegram’da screenshot/checkpoint mesajları (login → ders linki → join)
+- T-5 dakika tam olarak: Telegram'da "son 5 dakika, giris yapiyorum" mesaji
+- T-5..T-3 dakika: Login / DYS / MFA benzeri ilk ilerleme mesajlari ve ekran goruntuleri
+- T-3..T-0 dakika: Ders linki bulundu / join asamasina gecildi mesajlari ve ekran goruntuleri
+- T-0 civari: Worker tarafinda `attend` / `join` task baslangici
+- T+0..T+2 dakika: Telegram'da screenshot/checkpoint mesajlari (login -> ders linki -> join -> connected)
 
-### 4.3 Loglardan doğrulama (en güvenilir sinyal)
+### 4.3 Loglardan dogrulama (en guvenilir sinyal)
 
 Dev:
 
@@ -111,26 +119,26 @@ Prod:
 docker compose -f docker-compose.yml logs -f --tail 200 bot scheduler worker
 ```
 
-Beklenen göstergeler:
+Beklenen gostergeler:
 
-- **Scheduler**: job restore / job run / next run hesaplama (hata yok)
-- **Worker**: Celery task receive + task start (attend/join akışı)
-- **Bot**: reminder gönderimi + durum mesajları
+- Scheduler: job restore / job run / next run hesaplama (hata yok)
+- Worker: Celery task receive + task start (attend/join akisi)
+- Bot: reminder gonderimi + durum mesajlari + screenshot bildirimleri
 
-## 5) Başarısızlık durumunda hızlı teşhis
+## 5) Basarisizlik durumunda hizli teshis
 
-- `/status` job sayısı 0:
-  - Scheduler’ın Redis’e bağlandığını doğrula (REDIS_URL host/port)
-  - Redis db=1 boş mu kontrol et (`DBSIZE`)
-- T-5 mesajı gelmiyor ama job var:
-  - Scheduler logunda “misfire”/timezone hatası var mı bak
+- `/status` job sayisi 0:
+  - Scheduler'in Redis'e baglandigini dogrula (`REDIS_URL` host/port)
+  - Redis db=1 bos mu kontrol et (`DBSIZE`)
+- T-5 mesaji gelmiyor ama job var:
+  - Scheduler logunda timezone veya misfire hatasi var mi bak
+  - Kullanici timezone degeri dogru mu kontrol et: `/timezone`
   - Container saatini kontrol et:
 
 ```powershell
 docker compose -f docker-compose.dev.yml exec scheduler python -c "import datetime; print(datetime.datetime.now())"
 ```
 
-- Worker task almıyor:
-  - Worker logunda broker bağlantı hatası var mı bak
-  - `REDIS_URL` hem bot hem worker için aynı mı doğrula
-
+- Worker task almiyor:
+  - Worker logunda broker baglanti hatasi var mi bak
+  - `REDIS_URL` hem bot hem worker icin ayni mi dogrula

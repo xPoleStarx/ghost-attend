@@ -19,6 +19,7 @@ from telegram.ext import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.bot.states import OnboardingState
+from src.bot.utils.timezone import COMMON_TIMEZONES, is_valid_timezone, normalize_timezone_name
 from src.bot.utils.safe_text import escape_dynamic_text
 from src.core.logging import get_logger
 
@@ -34,6 +35,63 @@ def _init_buffers(context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["input_images"] = []
     if "input_texts" not in context.user_data:
         context.user_data["input_texts"] = []
+
+
+def _timezone_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Istanbul", callback_data="tz:Europe/Istanbul"),
+                InlineKeyboardButton("Berlin", callback_data="tz:Europe/Berlin"),
+            ],
+            [
+                InlineKeyboardButton("London", callback_data="tz:Europe/London"),
+                InlineKeyboardButton("New York", callback_data="tz:America/New_York"),
+            ],
+            [
+                InlineKeyboardButton("Los Angeles", callback_data="tz:America/Los_Angeles"),
+            ],
+            [
+                InlineKeyboardButton("Farkli timezone yazacagim", callback_data="tz:manual"),
+            ],
+        ]
+    )
+
+
+async def _prompt_timezone(chat, current_timezone: str | None = None) -> None:
+    current_line = f"Su an kayitli timezone: `{current_timezone}`\n\n" if current_timezone else ""
+    await chat.send_message(
+        text=(
+            "Saat dilimini secelim. Bu secim, dersin baslamasina tam 5 dakika kala "
+            "senin yerel saatine gore hatirlatma ve giris baslatmam icin kullanilir.\n\n"
+            f"{current_line}"
+            "Hazir seceneklerden birini kullan veya IANA timezone adini yaz.\n"
+            "Ornek: `Europe/Istanbul`, `America/New_York`"
+        ),
+        reply_markup=_timezone_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+async def _save_timezone(
+    *,
+    user_id: int,
+    first_name: str,
+    username: str | None,
+    timezone_name: str,
+) -> None:
+    from src.db.connection import get_session
+    from src.db.repositories.user import UserRepository
+
+    async with get_session() as session:
+        user_repo = UserRepository(session)
+        await user_repo.create_or_update(
+            user_id=user_id,
+            first_name=first_name,
+            username=username,
+            timezone=timezone_name,
+        )
+        await session.commit()
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -262,18 +320,72 @@ async def handle_dys_password(update: Update, context: ContextTypes.DEFAULT_TYPE
         ),
     )
 
-    # 5. Ders programı fotoğrafı iste (multi-input)
+    context.user_data["pending_timezone_setup"] = True
+    await _prompt_timezone(update.effective_chat)
+    return OnboardingState.ASK_TIMEZONE
+
+
+async def handle_timezone_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Kayitli timezone secimini hizli butonlarla al."""
+    query = update.callback_query
+    await query.answer()
+
+    timezone_value = str(query.data or "").split(":", 1)[-1]
+    if timezone_value == "manual":
+        await query.edit_message_text(
+            "Timezone adını metin olarak yaz.\nÖrnek: `Europe/Istanbul` veya `America/New_York`",
+            parse_mode="Markdown",
+        )
+        return OnboardingState.ASK_TIMEZONE
+
+    timezone_name = normalize_timezone_name(timezone_value)
+    await _save_timezone(
+        user_id=update.effective_user.id,
+        first_name=update.effective_user.first_name,
+        username=update.effective_user.username,
+        timezone_name=timezone_name,
+    )
+    context.user_data["pending_timezone_setup"] = False
     _init_buffers(context)
-    await update.effective_chat.send_message(
+    await query.edit_message_text(
         text=(
-            "✅ Bilgiler kaydedildi!\n\n"
-            "Şimdi ders programını yükle. 📷\n"
+            f"Timezone kaydedildi: `{timezone_name}`\n\n"
+            "Şimdi ders programını yükle.\n"
             "Birden fazla fotoğraf ve/veya metin gönderebilirsin.\n"
             "Tamamlanınca *bitti* yaz."
         ),
         parse_mode="Markdown",
     )
+    return OnboardingState.ASK_SCHEDULE_PHOTO
 
+
+async def handle_timezone_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Kullanıcının elle yazdığı timezone bilgisini doğrula ve kaydet."""
+    timezone_name = normalize_timezone_name(update.message.text)
+    if not is_valid_timezone(timezone_name):
+        await update.message.reply_text(
+            "Geçerli bir IANA timezone yazman gerekiyor.\nÖrnek: `Europe/Istanbul` veya `America/New_York`",
+            parse_mode="Markdown",
+        )
+        return OnboardingState.ASK_TIMEZONE
+
+    await _save_timezone(
+        user_id=update.effective_user.id,
+        first_name=update.effective_user.first_name,
+        username=update.effective_user.username,
+        timezone_name=timezone_name,
+    )
+    context.user_data["pending_timezone_setup"] = False
+    _init_buffers(context)
+    await update.message.reply_text(
+        text=(
+            f"Timezone kaydedildi: `{timezone_name}`\n\n"
+            "Şimdi ders programını yükle.\n"
+            "Birden fazla fotoğraf ve/veya metin gönderebilirsin.\n"
+            "Tamamlanınca *bitti* yaz."
+        ),
+        parse_mode="Markdown",
+    )
     return OnboardingState.ASK_SCHEDULE_PHOTO
 
 
@@ -503,6 +615,7 @@ async def handle_onboard_confirm_all(update: Update, context: ContextTypes.DEFAU
             "/status — aktif oturumu ve zamanlanmış derslerini gör\n"
             "/cancel — aktif oturumu iptal et\n"
             "/courses — derslerini listele\n"
+            "/timezone — yerel saat dilimini güncelle\n"
             "/help — komut listesi\n"
             "/reauth — kimlik doğrulamayı yenile"
         ),
@@ -667,7 +780,7 @@ async def handle_onboard_restart(update: Update, context: ContextTypes.DEFAULT_T
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Onboarding'i iptal et."""
-    for key in ("parsed_courses", "parse_warnings", "input_images", "input_texts", "chat_history"):
+    for key in ("parsed_courses", "parse_warnings", "input_images", "input_texts", "chat_history", "pending_timezone_setup"):
         context.user_data.pop(key, None)
     await update.message.reply_text(
         "⏹️ Kurulum iptal edildi. Tekrar başlamak için /start yaz."
@@ -695,6 +808,10 @@ def get_onboarding_handler() -> ConversationHandler:
             ],
             OnboardingState.ASK_DYS_PASSWORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dys_password),
+            ],
+            OnboardingState.ASK_TIMEZONE: [
+                CallbackQueryHandler(handle_timezone_callback, pattern="^tz:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone_text),
             ],
             OnboardingState.ASK_SCHEDULE_PHOTO: [
                 MessageHandler(filters.PHOTO, handle_schedule_photo),

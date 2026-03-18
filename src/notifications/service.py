@@ -129,7 +129,7 @@ class NotificationService:
             text=(
                 f"⏰ *{safe_course}* dersi yaklaşık {minutes_before} dakika sonra başlayacak.\n"
                 f"{time_line}"
-                "Ben arkada derse hazırlanıyorum; zamanı gelince senin adına sessizce katılacağım. 🤖"
+                "Dersin başlamasına son 5 dakika. Şimdi giriş yapıyorum ve her kritik adımı sana bildireceğim."
             ),
         )
 

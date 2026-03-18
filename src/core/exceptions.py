@@ -41,6 +41,11 @@ class AgentJoinFailed(AgentError):
     pass
 
 
+class AgentBrowserEnvironmentError(AgentError):
+    """TarayÄ±cÄ± bulunduÄŸu ortam nedeniyle baÅŸlatÄ±lamadÄ±."""
+    pass
+
+
 class AgentPageFrozen(AgentError):
     """Sayfa dondu veya agent timeout'a uğradı."""
     pass

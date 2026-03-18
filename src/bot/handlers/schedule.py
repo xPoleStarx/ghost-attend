@@ -826,12 +826,17 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     log.info("bot.schedule", user_id=user.id)
 
     from datetime import datetime
+    from zoneinfo import ZoneInfo
     from src.db.connection import get_session
     from src.db.repositories.course import CourseRepository
-
-    today_num = datetime.now().weekday()
+    from src.db.repositories.user import UserRepository
 
     async with get_session() as session:
+        user_repo = UserRepository(session)
+        db_user = await user_repo.get_by_id(user.id)
+        user_tz = getattr(db_user, "timezone", None) or "Europe/Istanbul"
+        today_num = datetime.now(ZoneInfo(user_tz)).weekday()
+
         course_repo = CourseRepository(session)
         todays_courses = await course_repo.get_courses_for_day(user.id, today_num)
 

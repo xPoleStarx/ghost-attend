@@ -48,3 +48,26 @@ async def test_schedule_course_uses_early_minutes_offset(monkeypatch):
     assert trigger.hour == 9
     assert trigger.minute == 55
 
+
+@pytest.mark.asyncio
+async def test_schedule_course_rolls_back_to_previous_day_when_t_minus_five_crosses_midnight(monkeypatch):
+    dummy = DummyScheduler()
+
+    monkeypatch.setattr(lesson_scheduler, "get_scheduler", lambda: dummy)
+
+    await lesson_scheduler.schedule_course(
+        user_id=1,
+        course_id="course-uuid",
+        course_name="Gece Dersi",
+        day="Pazartesi",
+        start_time="00:03",
+        end_time="01:00",
+        dys_url="https://dys.example.com",
+        early_minutes=5,
+        timezone_name="America/New_York",
+    )
+
+    trigger = dummy.jobs[0]["trigger"]
+    assert trigger.hour == 23
+    assert trigger.minute == 58
+    assert str(trigger.fields[4]) == "sun"

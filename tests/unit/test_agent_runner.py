@@ -7,6 +7,7 @@ import pytest
 
 from src.agent.runner import AgentRunner
 from src.core.exceptions import (
+    AgentBrowserEnvironmentError,
     AgentJoinFailed,
     AgentLoginFailed,
     AgentLinkNotFound,
@@ -63,6 +64,10 @@ class TestAgentRunnerParseResult:
 
         with pytest.raises(AgentJoinFailed):
             self.runner._parse_result(EmptyHistory())
+
+    def test_display_error_in_result_raises_environment_error(self):
+        with pytest.raises(AgentBrowserEnvironmentError):
+            self.runner._parse_result("Missing X server or $DISPLAY")
 
 
 @pytest.mark.asyncio
@@ -126,9 +131,12 @@ async def test_runner_custom_runtime_uses_runtime_engine(monkeypatch):
         async def close(self):
             return None
 
+    launch_kwargs = {}
+
     class FakePlaywright:
         def __init__(self):
             async def launch(headless=True):
+                launch_kwargs["headless"] = headless
                 return FakeBrowser()
 
             self.chromium = SimpleNamespace(launch=launch)
@@ -144,11 +152,32 @@ async def test_runner_custom_runtime_uses_runtime_engine(monkeypatch):
         return {"status": "completed", "raw": "joined"}
 
     monkeypatch.setattr("src.agent.runner.async_playwright", lambda: FakePlaywright())
+    monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setattr("src.runtime.engine.RuntimeEngine.run_goal", fake_run_goal, raising=False)
 
     runner = AgentRunner(session_id="00000000-0000-0000-0000-000000000000", user_id=1)
     result = await runner.run(course_name="Test", dys_url="https://dys", end_time="10:00")
     assert result["status"] == "completed"
+    assert launch_kwargs["headless"] is True
+
+
+@pytest.mark.asyncio
+async def test_runner_legacy_path_converts_display_errors(monkeypatch):
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self):
+            raise RuntimeError("Missing X server or $DISPLAY")
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setattr("src.agent.runner.settings.AGENT_RUNTIME_MODE", "legacy")
+
+    with patch("browser_use.Agent", FakeAgent):
+        with patch.object(AgentRunner, "_create_llm", return_value=MagicMock()):
+            runner = AgentRunner(session_id="t", user_id=1)
+            with pytest.raises(AgentBrowserEnvironmentError):
+                await runner.run(course_name="Test", dys_url="https://dys", end_time="10:00")
 
 
 class TestAgentRunnerRetry:

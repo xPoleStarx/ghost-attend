@@ -31,6 +31,7 @@ from src.core.constants import (
     RETRY_DELAY_SECONDS,
 )
 from src.core.exceptions import (
+    AgentBrowserEnvironmentError,
     AgentCancelled,
     AgentJoinFailed,
     AgentLoginFailed,
@@ -47,6 +48,31 @@ from src.runtime.models import RuntimeGoal
 from src.runtime.planner import RuntimePlanner
 
 log = get_logger(__name__)
+
+
+def _should_use_headless_browser() -> bool:
+    """Force headless mode in environments without a display server."""
+    return bool(getattr(settings, "BROWSER_HEADLESS", True)) or not bool(os.environ.get("DISPLAY"))
+
+
+def _is_display_environment_error(exc: Exception) -> bool:
+    message = str(exc or "").casefold()
+    return any(
+        marker in message
+        for marker in (
+            "missing x server",
+            "$display",
+            "headed browser without having a xserver",
+            "platform failed to initialize",
+        )
+    )
+
+
+def _raise_if_display_environment_error(exc: Exception) -> None:
+    if _is_display_environment_error(exc):
+        raise AgentBrowserEnvironmentError(
+            "Tarayici baslatilamadi; sunucuda grafik oturumu yok, headless mod gerekiyor."
+        ) from exc
 
 
 class AgentRunner:
@@ -169,7 +195,7 @@ class AgentRunner:
         cookies: list[dict] | None,
         mfa_code: str | None,
     ) -> dict:
-        headless = bool(getattr(settings, "BROWSER_HEADLESS", True)) or not bool(os.environ.get("DISPLAY"))
+        headless = _should_use_headless_browser()
         browser_service = BrowserControlService()
         planner = RuntimePlanner(call_llm)
         runtime_ipc = RuntimeIPC(self.redis) if self.redis else None
@@ -188,7 +214,11 @@ class AgentRunner:
             raise AgentJoinFailed("Dys URL or direct URL is required.")
 
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=headless)
+            try:
+                browser = await playwright.chromium.launch(headless=headless)
+            except Exception as exc:
+                _raise_if_display_environment_error(exc)
+                raise
             context = await browser.new_context()
             if cookies:
                 try:
@@ -332,7 +362,7 @@ class AgentRunner:
                     except Exception:
                         pass
 
-        headless = bool(getattr(settings, "BROWSER_HEADLESS", True)) or not bool(os.environ.get("DISPLAY"))
+        headless = _should_use_headless_browser()
         agent = None
         init_errors: list[str] = []
         on_step_supported = False
@@ -342,8 +372,6 @@ class AgentRunner:
             {"task": task, "llm": llm, "on_step": _on_step, "headless": headless},
             {"task": task, "llm": llm, "browser_config": {"headless": headless}},
             {"task": task, "llm": llm, "headless": headless},
-            {"task": task, "llm": llm, "on_step": _on_step},
-            {"task": task, "llm": llm},
         ]
 
         for kwargs in candidate_kwargs:
@@ -378,6 +406,9 @@ class AgentRunner:
             raise AgentPageFrozen(f"Agent timed out after {timeout} seconds") from exc
         except AgentCancelled:
             return {"status": "cancelled"}
+        except Exception as exc:
+            _raise_if_display_environment_error(exc)
+            raise
 
     def _parse_result(self, raw_result) -> dict:
         """Parse the legacy agent result."""
@@ -401,6 +432,10 @@ class AgentRunner:
             return False
 
         result_text = str(raw_result)
+        if _is_display_environment_error(Exception(result_text)):
+            raise AgentBrowserEnvironmentError(
+                "Tarayici baslatilamadi; sunucuda grafik oturumu yok, headless mod gerekiyor."
+            )
         if _has_empty_history(raw_result) or "AgentHistoryList(all_results=[]" in result_text:
             raise AgentJoinFailed("Browser failed to initialize or no actions were executed.")
 
@@ -438,6 +473,8 @@ class AgentRunner:
                         return {"status": "cancelled"}
                 return await self.run(**kwargs)
             except AgentMFARequired:
+                raise
+            except AgentBrowserEnvironmentError:
                 raise
             except AgentCancelled:
                 log.info("agent.cancelled_by_user", session_id=self.session_id)

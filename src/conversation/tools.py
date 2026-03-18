@@ -11,8 +11,31 @@ from src.core.constants import DAYS_TR
 from src.runtime.ipc import RuntimeIPC
 
 
+_JOIN_FILLER_WORDS = {
+    "derse",
+    "dersine",
+    "dersi",
+    "dersinin",
+    "simdi",
+    "hemen",
+    "hadi",
+    "katil",
+    "katilim",
+    "gir",
+    "baslat",
+    "beni",
+    "lutfen",
+}
+
+
 def _normalize_course_name(name: str) -> str:
     return " ".join(name.casefold().split())
+
+
+def _clean_join_course_query(text: str) -> str:
+    normalized = _normalize_course_name(text)
+    tokens = [token for token in normalized.split() if token not in _JOIN_FILLER_WORDS]
+    return " ".join(tokens).strip()
 
 
 def _pick_best_course(courses: list[object], query: str) -> object | None:
@@ -31,6 +54,36 @@ def _pick_best_course(courses: list[object], query: str) -> object | None:
             best = course
             best_score = score
     return best if best_score > 0 else None
+
+
+def _find_plausible_course_matches(courses: list[object], query: str) -> list[object]:
+    query_norm = _normalize_course_name(query)
+    query_tokens = set(query_norm.split())
+    ranked: list[tuple[int, object]] = []
+    for course in courses:
+        name = _normalize_course_name(getattr(course, "name", ""))
+        name_tokens = set(name.split())
+        score = 0
+        if query_norm == name:
+            score += 200
+        if query_norm and query_norm in name:
+            score += 120
+        if name and name in query_norm:
+            score += 80
+        overlap = len(query_tokens & name_tokens)
+        if overlap:
+            score += overlap * 25
+        if query_tokens and query_tokens <= name_tokens:
+            score += 40
+        ranked.append((score, course))
+
+    ranked = [item for item in ranked if item[0] > 0]
+    if not ranked:
+        return []
+
+    ranked.sort(key=lambda item: (item[0], len(getattr(item[1], "name", ""))), reverse=True)
+    top_score = ranked[0][0]
+    return [course for score, course in ranked if score >= top_score - 20]
 
 
 def _extract_time_value(text: str) -> str | None:
@@ -275,8 +328,38 @@ class ConversationToolRegistry:
             for phrase in ["katilacak misin", "katÄ±lacak mÄ±sÄ±n", "girecek misin", "derste misin", "hangi ders"]
         ):
             return ToolResult(ok=False, message="Bu bir durum sorusu gibi gorunuyor. Istersen aktif durumu kontrol edebilirim.")
-        matches = await self.course_repo.find_by_name(self.user_id, query, active_only=True, limit=5)
-        target = _pick_best_course(matches, query)
+        raw_message = str(context.get("message_text") or "").strip()
+        cleaned_query = _clean_join_course_query(query)
+
+        search_terms: list[str] = []
+        for candidate in (cleaned_query, query, _clean_join_course_query(raw_message)):
+            normalized = _normalize_course_name(candidate)
+            if normalized and normalized not in search_terms:
+                search_terms.append(normalized)
+
+        matches: list[object] = []
+        seen_ids: set[str] = set()
+        for candidate in search_terms:
+            candidate_matches = await self.course_repo.find_by_name(self.user_id, candidate, active_only=True, limit=5)
+            for course in candidate_matches:
+                course_id = str(getattr(course, "id", ""))
+                if course_id not in seen_ids:
+                    matches.append(course)
+                    seen_ids.add(course_id)
+
+        target = None
+        for candidate in (cleaned_query, query, raw_message):
+            target = _pick_best_course(matches, candidate)
+            if target is not None:
+                break
+
+        plausible = _find_plausible_course_matches(matches, cleaned_query or query or raw_message)
+        if target is None and len(plausible) == 1:
+            target = plausible[0]
+        if target is not None and len(plausible) > 1:
+            target = None
+        if target is None and len(context.get("courses") or []) == 1:
+            target = list(context.get("courses") or [])[0]
         if target is None:
             return ToolResult(ok=False, message="Baslatmam icin ders adini biraz daha net yazman gerekiyor.")
         dys_url = await self.credential_repo.get_dys_url_for_user(self.user_id)

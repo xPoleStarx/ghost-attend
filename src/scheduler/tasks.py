@@ -1,9 +1,7 @@
 """
-GhostAttend — Celery Tasks
+GhostAttend - Celery Tasks
 
-Celery task tanımları: ders katılımı, cookie bakımı, sağlık kontrolü.
-Her task asenkron olarak çalıştırılır ve sonuçlarını Redis'e yazar.
-architecture.md Section 11.2
+Celery task definitions for lesson attendance, cookie maintenance, and health checks.
 """
 
 import asyncio
@@ -21,7 +19,7 @@ _worker_loop: asyncio.AbstractEventLoop | None = None
 
 
 class AttendLessonTaskFailed(RuntimeError):
-    """Celery tarafında business-failure durumlarını hata olarak yükselt."""
+    """Raise business-failure outcomes as task errors on the Celery side."""
 
 
 def _raise_for_unsuccessful_task_result(result: dict) -> None:
@@ -38,15 +36,21 @@ def _raise_for_unsuccessful_task_result(result: dict) -> None:
     raise AttendLessonTaskFailed(f"{status}: {details}")
 
 
+def _build_start_message(course_name: str, start_time: str | None = None) -> str:
+    start_time_line = f"Planlanan baslangic saati: {start_time}\n" if start_time else ""
+    return (
+        f"⏰ **{course_name}** dersi icin son 5 dakika akisi baslatiliyor...\n"
+        f"{start_time_line}"
+        "Tarayici baslatilip giris denemesi yapiliyor. Login, link bulma ve join adimlarinda seni ekran goruntuleriyle bilgilendirecegim."
+    )
+
+
 def _run_async(coro):
     """
-    Senkron Celery worker'da async fonksiyon çalıştır.
+    Run async code in the synchronous Celery worker.
 
-    Her worker process'i için tek bir event loop oluşturur ve tüm async
-    görevleri bu loop üzerinde çalıştırır. Böylece asyncpg/SQLAlchemy
-    bağlantıları farklı loop'lara dağılmadığı için
-    "Future attached to a different loop" ve
-    "Event loop is closed" tipindeki hatalar engellenir.
+    Creates one event loop per worker process and reuses it so asyncpg/SQLAlchemy
+    connections stay bound to a single loop.
     """
     global _worker_loop
 
@@ -60,7 +64,7 @@ def _run_async(coro):
 @celery_app.task(
     name="src.scheduler.tasks.attend_lesson_task",
     bind=True,
-    max_retries=0,  # Retry mantığı orchestrator'da
+    max_retries=0,
     soft_time_limit=3600,
     time_limit=3900,
 )
@@ -75,10 +79,7 @@ def attend_lesson_task(
     direct_url: str | None = None,
     dys_search_hint: str | None = None,
 ):
-    """
-    Bir derse otonom katılım Celery task'ı.
-    SessionOrchestrator'ı çalıştırır.
-    """
+    """Autonomous lesson attendance Celery task."""
     session_id = str(uuid.uuid4())
 
     log.info(
@@ -100,20 +101,14 @@ def attend_lesson_task(
         from src.security.encryption import CredentialVault
         from src.security.vault import VaultService
 
-        # Bağlantılar
         redis_client = aioredis.from_url(settings.REDIS_URL)
 
         async with get_session() as db_session:
-            # Vault oluştur
             vault = CredentialVault(settings.MASTER_ENCRYPTION_KEY)
             vault_service = VaultService(db_session, vault)
 
-            # Notification servisi
-            notifier = NotificationService(
-                bot_token=settings.TELEGRAM_BOT_TOKEN,
-            )
+            notifier = NotificationService(bot_token=settings.TELEGRAM_BOT_TOKEN)
 
-            # DB session kaydı oluştur (tek source of truth)
             session_repo = SessionRepository(db_session)
             agent_session = await session_repo.create(
                 user_id=user_id,
@@ -127,19 +122,10 @@ def attend_lesson_task(
                 course=course_name,
             )
 
-            # Kullanıcıya "başlıyor" bildirimi (job tetiklendiğinde 5dk önce çalışır).
             try:
-                start_time_line = ""
-                if start_time:
-                    start_time_line = f"Planlanan baslangic saati: {start_time}\n"
-
                 await notifier.send_message(
                     user_id=user_id,
-                    text=(
-                        f"⏰ **{course_name}** dersi için otomatik katılım başlatılıyor...\n"
-                        f"{start_time_line}"
-                        "Tarayıcı açılıp derse girildiğinde ekran görüntüleri/bildirimler gelmeye başlayacak."
-                    ),
+                    text=_build_start_message(course_name, start_time),
                     parse_mode="Markdown",
                 )
             except Exception as e:
@@ -150,7 +136,6 @@ def attend_lesson_task(
                     error=str(e),
                 )
 
-            # Orchestrator
             orchestrator = SessionOrchestrator(
                 user_id=user_id,
                 session_id=str(agent_session.id),
@@ -160,7 +145,6 @@ def attend_lesson_task(
                 session_repo=session_repo,
             )
 
-            # Çalıştır
             result = await orchestrator.attend_lesson(
                 course_name=course_name,
                 dys_url=dys_url,
@@ -194,10 +178,7 @@ def attend_lesson_task(
 
 @celery_app.task(name="src.scheduler.tasks.check_cookie_expiry_task")
 def check_cookie_expiry_task():
-    """
-    Günlük cookie expire kontrolü.
-    Expire olacak cookie'leri tespit edip kullanıcıya bildirim gönderir.
-    """
+    """Daily cookie expiry check."""
     log.info("task.check_cookie_expiry")
 
     async def _run():
@@ -219,9 +200,9 @@ def check_cookie_expiry_task():
                 await notifier.send_message(
                     user_id=cred.user_id,
                     text=(
-                        "⚠️ Oturum bilgilerin yakında expire olacak.\n"
-                        "Sonraki derslerde yeniden giriş yapılacak.\n"
-                        "Sorunsuz devam etmesi için /reauth ile güncelle."
+                        "⚠️ Oturum bilgilerin yakinda expire olacak.\n"
+                        "Sonraki derslerde yeniden giris yapilacak.\n"
+                        "Sorunsuz devam etmesi icin /reauth ile guncelle."
                     ),
                 )
 
@@ -232,10 +213,7 @@ def check_cookie_expiry_task():
 
 @celery_app.task(name="src.scheduler.tasks.health_check_task")
 def health_check_task():
-    """
-    Periyodik sağlık kontrolü.
-    Redis, DB ve Telegram bağlantılarını test eder.
-    """
+    """Periodic health check."""
     log.info("task.health_check")
 
     async def _run():
@@ -245,7 +223,6 @@ def health_check_task():
 
         checks = {"redis": False, "timestamp": datetime.now(timezone.utc).isoformat()}
 
-        # Redis check
         try:
             redis_client = aioredis.from_url(settings.REDIS_URL)
             await redis_client.ping()

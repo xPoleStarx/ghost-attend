@@ -126,15 +126,21 @@ class CheckpointHandler:
         screenshot_bytes = step_info.get("screenshot")
 
         # Telegram'a gönder
-        if self.notifier and screenshot_bytes:
+        if self.notifier:
             try:
-                await self.notifier.send_screenshot(
-                    user_id=self.user_id,
-                    screenshot_bytes=screenshot_bytes,
-                    caption=f"{emoji} {message}",
-                    checkpoint_name=checkpoint_name,
-                    session_id=self.session_id,
-                )
+                if screenshot_bytes:
+                    await self.notifier.send_screenshot(
+                        user_id=self.user_id,
+                        screenshot_bytes=screenshot_bytes,
+                        caption=f"{emoji} {message}",
+                        checkpoint_name=checkpoint_name,
+                        session_id=self.session_id,
+                    )
+                else:
+                    await self.notifier.send_message(
+                        user_id=self.user_id,
+                        text=f"{emoji} {message}",
+                    )
             except Exception as e:
                 log.error(
                     "agent.checkpoint_notify_failed",

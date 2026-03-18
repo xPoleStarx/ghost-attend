@@ -6,6 +6,7 @@ import redis.asyncio as aioredis
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
+from src.bot.utils.timezone import is_valid_timezone, normalize_timezone_name
 from src.core.constants import DAYS_TR
 from src.core.logging import get_logger
 
@@ -182,10 +183,59 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/timezone - show or update the user's timezone."""
+    user = update.effective_user
+    if user is None or update.message is None:
+        return
+
+    from src.db.connection import get_session
+    from src.db.repositories.user import UserRepository
+
+    requested = normalize_timezone_name(" ".join(context.args)) if context.args else ""
+
+    async with get_session() as session:
+        user_repo = UserRepository(session)
+        db_user = await user_repo.get_by_id(user.id)
+        current_timezone = getattr(db_user, "timezone", None) or "Europe/Istanbul"
+
+        if not requested:
+            await update.message.reply_text(
+                "Kayitli timezone bilgisi:\n"
+                f"- {current_timezone}\n\n"
+                "Degistirmek icin ornek kullanim:\n"
+                "/timezone Europe/Istanbul\n"
+                "/timezone America/New_York"
+            )
+            return
+
+        if not is_valid_timezone(requested):
+            await update.message.reply_text(
+                "Gecerli bir IANA timezone yazman gerekiyor.\n"
+                "Ornek: /timezone Europe/Istanbul"
+            )
+            return
+
+        await user_repo.create_or_update(
+            user_id=user.id,
+            first_name=update.effective_user.first_name,
+            username=update.effective_user.username,
+            timezone=requested,
+        )
+        await session.commit()
+
+    await update.message.reply_text(
+        "Timezone guncellendi.\n"
+        f"- Yeni timezone: {requested}\n"
+        "Sonraki scheduler job hesaplari bu saat dilimine gore yapilacak."
+    )
+
+
 def get_session_handlers() -> list[CommandHandler]:
     """Return command handlers related to session management."""
     return [
         CommandHandler("status", status_command),
         CommandHandler("cancel", cancel_session_command),
         CommandHandler("health", health_command),
+        CommandHandler("timezone", timezone_command),
     ]

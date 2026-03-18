@@ -133,6 +133,7 @@ class TestNotificationService:
         call_text = mock_bot.send_message.call_args[1]["text"]
         assert "Fizik" in call_text
         assert "14:00" in call_text
+        assert "Şimdi giriş yapıyorum" in call_text
 
     @pytest.mark.asyncio
     async def test_send_daily_summary(self):

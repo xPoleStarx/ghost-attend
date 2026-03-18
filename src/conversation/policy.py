@@ -46,6 +46,12 @@ def _extract_direct_url(text: str) -> str | None:
 
 def _extract_course_query(text: str) -> str:
     normalized = _normalize(text)
+    cleaned = re.sub(
+        r"\b(lutfen|simdi|hemen|katil|gir|baslat|hadi|beni|bir)\b",
+        " ",
+        normalized,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     for pattern in (
         r"(?P<course>.+?)\s+dersine\b",
         r"(?P<course>.+?)\s+derse\b",
@@ -53,7 +59,7 @@ def _extract_course_query(text: str) -> str:
         r"(?P<course>.+?)\s+dersi\b",
         r"(?P<course>.+?)\s+i[Ã§c]in\b",
     ):
-        match = re.search(pattern, normalized)
+        match = re.search(pattern, cleaned)
         if match:
             candidate = match.group("course")
             candidate = re.sub(
@@ -62,6 +68,10 @@ def _extract_course_query(text: str) -> str:
                 candidate,
             )
             return re.sub(r"\s+", " ", candidate).strip(" ,.:;!?-_")
+    compact = re.sub(r"\b(derse|dersine|dersi|dersinin)\b", " ", cleaned)
+    compact = re.sub(r"\s+", " ", compact).strip(" ,.:;!?-_")
+    if compact and compact not in {"ders", "canli ders", "online ders", "toplanti"}:
+        return compact
     return ""
 
 
