@@ -1,32 +1,63 @@
 # GhostAttend
 
-Telegram bot + web agent tabanli, universite canli derslerine otonom katilim sistemi.
+GhostAttend is a self-hosted automation system that joins university live classes on behalf of the user through a Telegram bot, a scheduler, and a browser automation worker.
 
-## Ne yapar?
+It is designed for deployments where the user controls the infrastructure, stores credentials locally, and wants visibility into every important step of the automation lifecycle.
 
-- Ders programini goruntuden veya metinden parse eder.
-- Dersleri scheduler ile zamanlar.
-- Worker tarafinda DYS/OBS uzerinden Teams/Zoom linkini bulup derse katilir.
-- Telegram uzerinden durum, ekran goruntusu ve hata bildirimi gonderir.
+## Overview
 
-## Hizli baslangic
+GhostAttend combines four main capabilities:
 
-Bu repo icin en kolay yol kurulum scriptini bir kez, sonra da gunluk isler icin `dev` scriptini kullanmaktir.
+- Telegram-based onboarding and control
+- schedule ingestion from image or text
+- scheduled execution through APScheduler and Celery
+- browser automation through Playwright and `browser-use`
+
+In practice, the system can:
+
+- collect and securely store DYS / university portal credentials
+- parse course schedules from screenshots or text input
+- create recurring jobs before each lesson
+- log into the university system
+- locate the live class link
+- join the class with camera and microphone disabled
+- send progress updates and screenshots back to Telegram
+
+## Architecture
+
+At a high level the runtime looks like this:
+
+```text
+Telegram Bot <-> Redis <-> Celery Worker <-> Playwright / browser-use
+      |              |             |
+      v              v             v
+  PostgreSQL     APScheduler     LLM-backed agent flow
+```
+
+Core services:
+
+- `bot`: Telegram interaction layer
+- `worker`: task execution and browser automation
+- `scheduler`: recurring job orchestration
+- `postgres`: persistent application state
+- `redis`: queue, state, and scheduler persistence
+
+Detailed architecture notes live in [architecture.md](architecture.md).
+
+## Quick Start
+
+The recommended flow is:
+
+1. clone the repository
+2. run the platform-specific setup script once
+3. use the `dev` helper script for daily operations
 
 ### Windows
 
 ```powershell
 git clone https://github.com/xPoleStarx/ghost-attend.git
 cd ghost-attend
-.\scripts\setup.ps1
-```
-
-Kurulumdan sonra gunluk kullanim:
-
-```powershell
-.\scripts\dev.ps1 up
-.\scripts\dev.ps1 logs
-.\scripts\dev.ps1 rebuild
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
 ### Linux / macOS
@@ -37,48 +68,33 @@ cd ghost-attend
 bash scripts/setup.sh
 ```
 
-Kurulumdan sonra gunluk kullanim:
+## What the Setup Script Does
 
-```bash
-./scripts/dev.sh up
-./scripts/dev.sh logs
-./scripts/dev.sh rebuild
-```
+The setup scripts are intended to reduce manual configuration to a minimum. They:
 
-## Bu degisikliklerin gecerli olmasi icin ne yapmaliyim?
+- create `.env` from `.env.example` if needed
+- ask for the Telegram bot token
+- ask for one LLM provider API key
+- generate `MASTER_ENCRYPTION_KEY`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD`
+- synchronize `DATABASE_URL` and `REDIS_URL` with the generated credentials
+- start the development stack with a build
 
-Hangi compose dosyasini kullandigina gore degisiyor:
+Authoritative setup details are documented in [docs/SETUP.md](docs/SETUP.md).
 
-- `docker-compose.dev.yml` kullaniyorsan:
-  - `src/` altindaki Python degisiklikleri volume ile mount edildigi icin cogu zaman sadece container restart yeterlidir.
-  - Ama bu tur degisikliklerde `docker-compose.dev.yml` environment'i de degistigi icin en temiz yol `rebuild` calistirmaktir.
-- `docker-compose.yml` kullaniyorsan:
-  - Image icine kopyalandigi icin rebuild gerekir.
+## Daily Operations
 
-Onerilen komut:
-
-```powershell
-.\scripts\dev.ps1 rebuild
-```
-
-veya
-
-```bash
-./scripts/dev.sh rebuild
-```
-
-## En sik kullanilan komutlar
+After the first installation, you should not need to remember raw `docker compose` commands.
 
 ### Windows
 
 ```powershell
-.\scripts\dev.ps1 up
-.\scripts\dev.ps1 rebuild
-.\scripts\dev.ps1 logs
-.\scripts\dev.ps1 ps
-.\scripts\dev.ps1 migrate
-.\scripts\dev.ps1 down
-.\scripts\dev.ps1 reset
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 up
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 rebuild
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 logs
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 ps
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 migrate
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 down
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 reset
 ```
 
 ### Linux / macOS
@@ -93,38 +109,126 @@ veya
 ./scripts/dev.sh reset
 ```
 
-## Kurulum ozeti
+## Logs and Diagnostics
 
-`setup` scriptleri sunlari yapar:
+To stream service logs from the terminal:
 
-- `.env.example` dosyasini `.env` olarak kopyalar.
-- Telegram token ve tek bir LLM provider API key ister.
-- `MASTER_ENCRYPTION_KEY`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` gibi alanlari uretir.
-- `DATABASE_URL` ve `REDIS_URL` degerlerini gercek sifrelerle senkronize eder.
-- Development ortaminda `docker compose up -d --build` ile sistemi kaldirir.
+### Development stack
 
-## Servisler
+```powershell
+docker compose -f docker-compose.dev.yml logs -f bot worker scheduler
+```
 
-- `bot`: Telegram botu
-- `worker`: Celery worker + Playwright/browser-use
-- `scheduler`: APScheduler tetikleyicisi
-- `postgres`: kalici veri
-- `redis`: queue, state, scheduler store
+### Production stack
 
-## Dikkat edilmesi gerekenler
+```powershell
+docker compose -f docker-compose.yml logs -f bot worker scheduler
+```
 
-- Worker/scheduler container icinde browser her zaman headless calisir. Bu bilincli bir ayardir.
-- `docker-compose.dev.yml` development icindir.
-- Production icin `docker-compose.yml` ve uygun domain/SSL/webhook ayarlari gerekir.
+If you want logs for a single container:
 
-## Dokumantasyon
+```powershell
+docker logs -f ghost-attend-worker-1
+docker logs -f ghost-attend-bot-1
+docker logs -f ghost-attend-scheduler-1
+```
 
-- [Kurulum Rehberi](docs/SETUP.md)
+Equivalent shorthand via the helper script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 logs
+```
+
+```bash
+./scripts/dev.sh logs
+```
+
+## Development Workflow
+
+Not every change requires the same action.
+
+### When restart is usually enough
+
+If you only changed Python files under `src/` while using `docker-compose.dev.yml`, the source code is mounted into the containers. In that case, restarting the relevant service is often enough.
+
+### When rebuild is required
+
+Use `rebuild` if you changed:
+
+- `docker-compose*.yml`
+- any `Dockerfile`
+- environment variables
+- Python dependencies
+- Playwright installation behavior
+- startup scripts
+
+If you are unsure, `rebuild` is the safest option.
+
+Recommended command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 rebuild
+```
+
+or:
+
+```bash
+./scripts/dev.sh rebuild
+```
+
+### Database changes
+
+If a schema change is involved, also run migration:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 migrate
+```
+
+or:
+
+```bash
+./scripts/dev.sh migrate
+```
+
+## Environment Notes
+
+Important runtime notes:
+
+- development uses [`docker-compose.dev.yml`](docker-compose.dev.yml)
+- production uses [`docker-compose.yml`](docker-compose.yml)
+- worker and scheduler are forced into headless browser mode in containers
+- the bot can still keep a developer-friendly `.env`, but containerized worker execution remains headless by design
+
+## Security Model
+
+This project is designed around self-hosting and local control:
+
+- credentials are stored locally
+- encryption is used for credential persistence
+- browser execution happens inside your own infrastructure
+- progress is surfaced through Telegram notifications and screenshots
+
+See [docs/SECURITY.md](docs/SECURITY.md) for the security document.
+
+## Documentation Index
+
+- [Setup Guide](docs/SETUP.md)
 - [Trigger Smoke Test](docs/TRIGGER_TEST.md)
-- [Guvenlik](docs/SECURITY.md)
-- [Katki Rehberi](docs/CONTRIBUTING.md)
-- [Mimari](architecture.md)
+- [Security](docs/SECURITY.md)
+- [Contributing](docs/CONTRIBUTING.md)
+- [Scenario Matrix](docs/SCENARIOS.md)
+- [Architecture](architecture.md)
 
-## Lisans
+## Project Governance
+
+- Contributions are documented in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
+- Security expectations and disclosure guidance are documented in [docs/SECURITY.md](docs/SECURITY.md)
+- Licensing terms are defined in [LICENSE](LICENSE)
+
+## Disclaimer
+
+This repository is intended for educational and self-hosted automation use. Compatibility with university systems, institutional rules, and platform terms remains the responsibility of the deployer.
+
+## License
 
 MIT
