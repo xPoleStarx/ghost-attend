@@ -89,45 +89,7 @@ class UserRepository:
         )
         return list(result.scalars().all())
 
-    async def create_or_update_credentials(
-        self,
-        user_id: int,
-        type: str,
-        email: str,
-        password: str,
-        dys_url: str | None = None,
-    ) -> None:
-        """Kullanıcı için şifreli credential oluştur veya güncelle."""
-        from cryptography.fernet import Fernet
-        from sqlalchemy.dialects.postgresql import insert
 
-        from src.core.config import settings
-        from src.db.models import Credential
-
-        f = Fernet(settings.MASTER_ENCRYPTION_KEY.encode())
-        email_enc = f.encrypt(email.encode())
-        password_enc = f.encrypt(password.encode())
-
-        stmt = (
-            insert(Credential)
-            .values(
-                user_id=user_id,
-                type=type,
-                email_enc=email_enc,
-                password_enc=password_enc,
-                dys_url=dys_url,
-            )
-            .on_conflict_do_update(
-                index_elements=["user_id", "type"],
-                set_={
-                    "email_enc": email_enc,
-                    "password_enc": password_enc,
-                    "dys_url": dys_url,
-                    "last_verified": None,  # Yeni şifre girildiğinde resetle
-                },
-            )
-        )
-        await self.session.execute(stmt)
 
     async def delete_user_and_related(self, user_id: int) -> None:
         """

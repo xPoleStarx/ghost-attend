@@ -10,7 +10,7 @@ import asyncio
 import redis.asyncio as aioredis
 from pathlib import Path
 
-from telegram.ext import Application, CommandHandler, PicklePersistence
+from telegram.ext import Application, CommandHandler, PicklePersistence, PersistenceInput
 
 # Celery app'i import ederek process-wide default/current set edilmesini garanti et.
 # Bu sayede bot process'i içinden publish edilen task'lar Redis broker'a gider.
@@ -33,10 +33,10 @@ log = get_logger(__name__)
 def create_application() -> Application:
     """Telegram bot Application oluştur ve handler'ları register et."""
 
-    # Merkezi metin sanitize katmanı için SafeExtBot kullan.
+    # Merkezi metin sanitize katmanı için SafeExtBot    # Persistence: bot_data veritabanı bağlantıları veya Redis objeleri içerdiği için diske yazılmamalı/yüklenmemeli
     persistence_path = Path("data") / "ptb_persistence.pkl"
     persistence_path.parent.mkdir(parents=True, exist_ok=True)
-    persistence = PicklePersistence(filepath=str(persistence_path))
+    persistence = PicklePersistence(filepath=str(persistence_path), store_data=PersistenceInput(bot_data=False))
 
     builder = (
         Application.builder()

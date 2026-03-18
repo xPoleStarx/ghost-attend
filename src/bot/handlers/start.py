@@ -217,9 +217,11 @@ async def handle_dys_password(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             log.warning("bot.delete_prompt_msg_failed", user_id=user_id)
 
-    # 3. Bilgileri DB'ye kaydet (şifreli)
     from src.db.connection import get_session
     from src.db.repositories.user import UserRepository
+    from src.core.config import settings
+    from src.security.encryption import CredentialVault
+    from src.security.vault import VaultService
 
     try:
         async with get_session() as session:
@@ -230,13 +232,15 @@ async def handle_dys_password(update: Update, context: ContextTypes.DEFAULT_TYPE
                 first_name=update.effective_user.first_name,
                 username=update.effective_user.username,
             )
-            # Credential'ı kaydet
-            await user_repo.create_or_update_credentials(
+            # Credential'ı kaydet (PBKDF2 türetilen key ile VaultService üzerinden)
+            vault = CredentialVault(settings.MASTER_ENCRYPTION_KEY)
+            vault_service = VaultService(session, vault)
+            await vault_service.save_credentials(
                 user_id=user_id,
-                type="unified",
+                credential_type="unified",
                 email=context.user_data["dys_email"],
                 password=password,
-                dys_url=context.user_data["dys_url"],
+                dys_url=context.user_data.get("dys_url"),
             )
             await session.commit()
     except SQLAlchemyError as e:

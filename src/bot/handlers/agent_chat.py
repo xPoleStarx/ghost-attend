@@ -8,7 +8,7 @@ LLM, tool-call benzeri JSON çıktısı üretir; bot bu tool'ları çalıştır�
 from __future__ import annotations
 
 import json
-from datetime import time, datetime
+from datetime import time, datetime, timezone
 import re
 from zoneinfo import ZoneInfo
 
@@ -25,18 +25,11 @@ log = get_logger(__name__)
 def _now_in_tz(tz_name: str) -> datetime:
     """
     Test-friendly timezone-aware 'now' üret.
-
-    Not: datetime.now(tz=...) bazı test monkeypatch senaryolarında uyumsuz olabiliyor.
-    Bu helper, argüman vermeden now alır ve tz'yi sonradan uygular.
     """
     tz = ZoneInfo(tz_name)
-    now = datetime.now()
-    # Test monkeypatch senaryolarında datetime benzeri olmayan nesneler dönebilir.
-    # Bu durumda timezone dönüşümü yapmadan geri dön (testler kendi 'now' nesnesini kontrol ediyor).
-    if not hasattr(now, "replace") or not hasattr(now, "astimezone"):
+    now = datetime.now(timezone.utc)
+    if not hasattr(now, "astimezone"):
         return now  # type: ignore[return-value]
-    if getattr(now, "tzinfo", None) is None:
-        return now.replace(tzinfo=tz)
     return now.astimezone(tz)
 
 

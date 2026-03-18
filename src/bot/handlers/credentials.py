@@ -82,14 +82,17 @@ async def handle_reauth_password(update: Update, context: ContextTypes.DEFAULT_T
 
     # DB'ye kaydet
     from src.db.connection import get_session
-    from src.db.repositories.user import UserRepository
+    from src.core.config import settings
+    from src.security.encryption import CredentialVault
+    from src.security.vault import VaultService
     
     try:
         async with get_session() as session:
-            user_repo = UserRepository(session)
-            await user_repo.create_or_update_credentials(
+            vault = CredentialVault(settings.MASTER_ENCRYPTION_KEY)
+            vault_service = VaultService(session, vault)
+            await vault_service.save_credentials(
                 user_id=user_id,
-                type="unified", # Varsayılan
+                credential_type="unified", # Varsayılan
                 email=context.user_data["dys_email"],
                 password=password,
                 dys_url=context.user_data.get("dys_url")
