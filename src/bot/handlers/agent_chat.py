@@ -22,6 +22,24 @@ from src.core.logging import get_logger
 log = get_logger(__name__)
 
 
+def _now_in_tz(tz_name: str) -> datetime:
+    """
+    Test-friendly timezone-aware 'now' üret.
+
+    Not: datetime.now(tz=...) bazı test monkeypatch senaryolarında uyumsuz olabiliyor.
+    Bu helper, argüman vermeden now alır ve tz'yi sonradan uygular.
+    """
+    tz = ZoneInfo(tz_name)
+    now = datetime.now()
+    # Test monkeypatch senaryolarında datetime benzeri olmayan nesneler dönebilir.
+    # Bu durumda timezone dönüşümü yapmadan geri dön (testler kendi 'now' nesnesini kontrol ediyor).
+    if not hasattr(now, "replace") or not hasattr(now, "astimezone"):
+        return now  # type: ignore[return-value]
+    if getattr(now, "tzinfo", None) is None:
+        return now.replace(tzinfo=tz)
+    return now.astimezone(tz)
+
+
 def _parse_time_hhmm(value: str) -> time:
     return time.fromisoformat(value.strip())
 
@@ -43,7 +61,7 @@ def _compute_next_lesson(courses) -> object | None:
 
     # Ders programı ve scheduler Europe/Istanbul üzerinden çalışıyor.
     # Buradaki hesap da aynı timezone'a göre yapılmalı ki "en yakın ders" yanlış çıkmasın.
-    now = datetime.now(ZoneInfo("Europe/Istanbul"))
+    now = _now_in_tz("Europe/Istanbul")
     now_minutes = now.hour * 60 + now.minute
     today_idx = now.weekday()  # Pazartesi=0
 
@@ -79,6 +97,8 @@ def _detect_intent(text: str) -> str | None:
         - None
     """
     lowered = text.lower()
+    # Bazı klavyelerde/encoding durumlarında "şimdi" kelimesi bozulabiliyor (örn: "�imdi").
+    lowered = lowered.replace("�", "ş")
 
     # Belirli bir ders için \"hemen şimdi\" manuel katılım isteği
     # Örnekler: \"sürdürülebilirlik dersine şimdi gir\", \"Kariyer Planlama dersine katıl\",
@@ -91,6 +111,10 @@ def _detect_intent(text: str) -> str | None:
         r"\bderse\s+şimdi\s+katıl\b",
         r"\bderse\s+katılım\s+şimdi\b",
         r"\bhadi\s+derse\s+gir\b",
+        # Bozuk karakter varyantları
+        r"\bderse\s+�imdi\s+gir\b",
+        r"\b�imdi\s+derse\s+gir\b",
+        r"\bşimdi\s+derse\s+gir\b",
     ]
     if any(re.search(p, lowered) for p in manual_join_patterns):
         return "manual_join_request"
@@ -147,8 +171,15 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     from src.db.connection import get_session
     from src.db.repositories.credential import CredentialRepository
     from src.db.repositories.course import CourseRepository
+    from src.db.repositories.user import UserRepository
     from src.scheduler.lesson_scheduler import schedule_all_courses_for_user
     from src.vision.schedule_parser import _extract_json_block
+
+    # Kısa hafıza: son N mesaj (persistence ile disk’e de yazılır)
+    history: list[dict] = context.user_data.get("chat_history", [])
+    history.append({"role": "user", "text": text[:500], "ts": datetime.utcnow().isoformat()})
+    history = history[-10:]
+    context.user_data["chat_history"] = history
 
     # Önce bekleyen manuel katılım onay/iptal akışını deterministik olarak ele al
     pending = context.user_data.get("pending_manual_join")
@@ -184,6 +215,10 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
     async with get_session() as session:
+        user_repo = UserRepository(session)
+        db_user = await user_repo.get_by_id(user.id)
+        user_tz = getattr(db_user, "timezone", None) or "Europe/Istanbul"
+
         cred_repo = CredentialRepository(session)
         dys_url = await cred_repo.get_dys_url_for_user(user.id)
 
@@ -408,13 +443,32 @@ async def handle_agent_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ]
         }
 
+        now_local = _now_in_tz(user_tz)
+        today_weekday = now_local.weekday()  # 0=Pazartesi
+        next_course = _compute_next_lesson(courses) if courses else None
+        next_course_summary = None
+        if next_course:
+            inv_days = {v: k for k, v in DAYS_TR.items()}
+            next_course_summary = {
+                "id": str(next_course.id),
+                "name": next_course.name,
+                "day": inv_days.get(next_course.day_of_week, "?"),
+                "start": next_course.start_time.strftime("%H:%M"),
+                "end": next_course.end_time.strftime("%H:%M"),
+            }
+
         system_prompt = f"""
 Sen GhostAttend'in otonom asistanısın. Kullanıcı Telegram üzerinden doğal dilde, Türkçe olarak istek yazar.
 
 ELİNDEKİ DURUM:
 - user_id: {user.id}
+- user_timezone: {user_tz}
+- now_local_iso: {now_local.isoformat()}
+- today_weekday: {today_weekday}  # 0=Pazartesi
+- next_scheduled_course: {json.dumps(next_course_summary, ensure_ascii=False)}
 - dys_url_var_mi: {"evet" if dys_url else "hayır"}
 - kayıtlı_dersler (JSON): {json.dumps(courses_payload, ensure_ascii=False)}
+- chat_history_last (JSON): {json.dumps(history[-6:], ensure_ascii=False)}
 - tool'lar (JSON): {json.dumps(tool_spec, ensure_ascii=False)}
 
  GÖREV:
@@ -620,7 +674,7 @@ KURALLAR:
                 return
 
             if tool == "get_today_lessons":
-                today_idx = datetime.now().weekday()
+                today_idx = _now_in_tz(user_tz).weekday()
                 today_courses = [c for c in courses if c.day_of_week == today_idx]
 
                 await _safe_delete(processing)

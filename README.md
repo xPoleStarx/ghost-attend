@@ -57,6 +57,24 @@ bash scripts/setup.sh
 .\scripts\setup.ps1
 ```
 
+### Servis Yönetimi (Günlük Kullanım)
+
+Kurulum script'i sistemi başlattıktan sonra aşağıdaki komutlarla yönetebilirsiniz:
+
+```powershell
+# Servisleri başlat
+docker compose -f docker-compose.dev.yml up -d
+
+# Logları takip et
+docker compose -f docker-compose.dev.yml logs -f bot worker
+
+# Servisleri durdur
+docker compose -f docker-compose.dev.yml down
+
+# Tam temizlik (DB dahil her şeyi siler)
+docker compose -f docker-compose.dev.yml down -v
+```
+
 ### Logları Görüntüleme
 
 Servisler Docker ile ayağa kalktıktan sonra Telegram botu ve worker loglarını takip etmek için:
@@ -64,6 +82,12 @@ Servisler Docker ile ayağa kalktıktan sonra Telegram botu ve worker logların�
 ```powershell
 docker compose -f docker-compose.dev.yml logs -f bot worker
 ```
+
+### T-5dk Tetikleme Smoke Test
+
+Yakın zamana ayarlı bir dersle uçtan uca akışı doğrulamak için checklist:
+
+- `docs/TRIGGER_TEST.md`
 
 > 🪄 **Not:** Kurulum betiği size ihtiyacı olan API anahtarlarını sırayla soracak, şifrelerinizi tamamen otonom üretecek ve onayınızla birlikte sistemi ayağa kaldıracaktır. Ekstra dosya düzenlemenize veya komut çalıştırmanıza gerek yoktur!
 

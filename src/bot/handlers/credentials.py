@@ -133,5 +133,5 @@ def get_reauth_handler() -> ConversationHandler:
         },
         fallbacks=[CommandHandler("cancel", cancel_reauth)],
         name="reauth",
-        persistent=False,
+        persistent=True,
     )

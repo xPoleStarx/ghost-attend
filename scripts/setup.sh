@@ -9,7 +9,16 @@ echo "---------------------------------------"
 
 # 1. Gerekli araçların kontrolü
 command -v docker >/dev/null 2>&1 || { echo >&2 "❌ Hata: docker yüklü değil. Kurulum iptal edildi."; exit 1; }
-command -v docker compose >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1 || { echo >&2 "❌ Hata: docker compose yüklü değil. Kurulum iptal edildi."; exit 1; }
+
+COMPOSE_FILE="docker-compose.dev.yml"
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose -f "$COMPOSE_FILE")
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose -f "$COMPOSE_FILE")
+else
+    echo >&2 "❌ Hata: docker compose yüklü değil. Kurulum iptal edildi."
+    exit 1
+fi
 
 # 2. .env Dosyasının Oluşturulması
 if [ ! -f .env ]; then
@@ -95,7 +104,7 @@ fi
 
 # 5. Host Klasörlerinin Ayarlanması
 echo "📁 Host klasörleri ayarlanıyor..."
-mkdir -p logs screenshots certs backups
+mkdir -p logs screenshots certs backups data
 
 if [ "$OSTYPE" = "linux-gnu"* ]; then
     sudo chown -R 1000:1000 logs screenshots 2>/dev/null || echo "⚠️ Uyarı: log ve screenshot klasörlerine yazma izni verilemedi, root olmayabilirsiniz."
@@ -109,9 +118,9 @@ start_now=${start_now:-Y}
 
 if [[ "$start_now" =~ ^[Yy]$ ]]; then
     echo "🚀 Docker Compose ile sistem başlatılıyor..."
-    docker compose up -d
-    echo "Sistem başlatıldı! Logları görmek için: docker compose logs -f bot"
+    "${COMPOSE[@]}" up -d
+    echo "Sistem başlatıldı! Logları görmek için: ${COMPOSE[*]} logs -f bot worker"
 else
-    echo "Kurulum tamamlandı. İstediğiniz zaman 'docker compose up -d' komutuyla başlatabilirsiniz."
+    echo "Kurulum tamamlandı. İstediğiniz zaman '${COMPOSE[*]} up -d' komutuyla başlatabilirsiniz."
 fi
 echo "İyi dersler! 🎓"

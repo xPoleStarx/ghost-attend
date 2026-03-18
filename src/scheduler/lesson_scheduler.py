@@ -9,6 +9,7 @@ architecture.md Section 11.3
 
 import asyncio
 from datetime import datetime, time, timedelta, timezone
+from urllib.parse import urlparse
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.redis import RedisJobStore
@@ -22,21 +23,45 @@ log = get_logger(__name__)
 
 # Celery app'i import ederek scheduler process'inde de default/current set edilmesini garanti et.
 # Bu sayede burada yapılan `attend_lesson_task.delay(...)` publish'i Redis broker'a gider.
-import src.scheduler.celery_app  # noqa: F401
+# Test ortamlarında celery dependency kurulmamış olabilir; bu durumda import'u yumuşat.
+try:
+    import src.scheduler.celery_app  # noqa: F401
+except ModuleNotFoundError:
+    log.warning("scheduler.celery_not_available")
 
 # APScheduler persistence — Redis job store
 _scheduler: AsyncIOScheduler | None = None
+
+
+def _redis_conn_from_settings() -> tuple[str, int, str | None]:
+    """
+    APScheduler RedisJobStore için bağlantı parametrelerini döndür.
+
+    Not:
+    - Celery tarafı `settings.REDIS_URL` kullanıyor.
+    - Scheduler tarafında host/port/password alanları ayrı tutulmuş.
+    Bu fonksiyon, mümkünse `REDIS_URL`'ı source of truth kabul ederek drift'i engeller.
+    """
+    if settings.REDIS_URL:
+        parsed = urlparse(settings.REDIS_URL)
+        if parsed.hostname:
+            host = parsed.hostname
+            port = parsed.port or 6379
+            password = parsed.password
+            return host, port, password
+    return settings.REDIS_HOST, settings.REDIS_PORT, (settings.REDIS_PASSWORD or None)
 
 
 def get_scheduler() -> AsyncIOScheduler:
     """Singleton scheduler instance döndür."""
     global _scheduler
     if _scheduler is None:
+        host, port, password = _redis_conn_from_settings()
         jobstores = {
             "default": RedisJobStore(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                password=settings.REDIS_PASSWORD or None,
+                host=host,
+                port=port,
+                password=password,
                 db=1,  # Ana Redis DB'den ayrı
             ),
         }
@@ -116,6 +141,9 @@ async def schedule_course(
             day_of_week=cron_day,
             hour=trigger_time.hour,
             minute=trigger_time.minute,
+            # CronTrigger default timezone'u bazı ortamlarda sistem tz (Etc/UTC) olabiliyor.
+            # Scheduler timezone'u ile tutarlı olması için açıkça set et.
+            timezone=scheduler.timezone,
         ),
         id=job_id,
         name=f"{course_name} ({day} {start_time})",
@@ -224,6 +252,13 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
     Returns:
         Oluşturulan job ID'leri
     """
+    scheduler = get_scheduler()
+    started_here = False
+    if not scheduler.running:
+        # Jobstore'a persist garantisi için kısa süreli paused start.
+        scheduler.start(paused=True)
+        started_here = True
+
     from src.db.connection import get_session
     from src.db.repositories.credential import CredentialRepository
     from src.db.repositories.course import CourseRepository
@@ -280,6 +315,13 @@ async def schedule_all_courses_for_user(user_id: int) -> list[str]:
         job_ids=job_ids,
     )
 
+    # Bot gibi non-scheduler process'lerde scheduler instance'ı çalışır bırakma.
+    if started_here:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+
     return job_ids
 
 
@@ -297,6 +339,53 @@ async def unschedule_all_for_user(user_id: int) -> int:
     return removed
 
 
+async def reconcile_jobs_for_user(user_id: int) -> dict:
+    """
+    Scheduler jobstore ile DB arasındaki drift'i düzelt.
+
+    - DB'de pasif/silinmiş veya yüz yüze (is_online=False) olan derslerin job'larını kaldırır.
+    - DB'de aktif online dersler için job oluşturmayı schedule_all_courses_for_user zaten yapar.
+    """
+    scheduler = get_scheduler()
+
+    from src.db.connection import get_session
+    from src.db.repositories.course import CourseRepository
+
+    async with get_session() as session:
+        course_repo = CourseRepository(session)
+        courses = await course_repo.get_user_courses(user_id, active_only=True)
+
+    # Active-only geldiği için burada sadece online filtreyi uygula
+    valid_course_ids: set[str] = {
+        str(c.id) for c in courses if c.is_online is not False
+    }
+
+    removed = 0
+    kept = 0
+    for job in scheduler.get_jobs():
+        if not job.id.startswith(f"course_{user_id}_"):
+            continue
+
+        # job_id: course_{user_id}_{course_uuid}
+        parts = job.id.split("_", 2)
+        course_part = parts[2] if len(parts) == 3 else ""
+        if course_part and course_part in valid_course_ids:
+            kept += 1
+            continue
+
+        scheduler.remove_job(job.id)
+        removed += 1
+
+    log.info(
+        "scheduler.reconcile_done",
+        user_id=user_id,
+        removed=removed,
+        kept=kept,
+        valid_count=len(valid_course_ids),
+    )
+    return {"removed": removed, "kept": kept, "valid": len(valid_course_ids)}
+
+
 def get_user_jobs(user_id: int) -> list[dict]:
     """Kullanıcının zamanlanmış job'larını listele."""
     scheduler = get_scheduler()
@@ -304,10 +393,13 @@ def get_user_jobs(user_id: int) -> list[dict]:
 
     for job in scheduler.get_jobs():
         if job.id.startswith(f"course_{user_id}_"):
+            next_run = getattr(job, "next_run_time", None)
             jobs.append({
                 "id": job.id,
                 "name": job.name,
-                "next_run": str(job.next_run_time) if job.next_run_time else None,
+                # APScheduler 3.x: next_run_time. Ortam drift'inde attribute yoksa None kalır.
+                "next_run": next_run,
+                "job_type": f"{type(job).__module__}.{type(job).__name__}",
             })
 
     return jobs

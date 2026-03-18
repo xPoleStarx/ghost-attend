@@ -18,6 +18,9 @@ try {
     exit 1
 }
 
+$ComposeFile = "docker-compose.dev.yml"
+$ComposeArgs = @("compose", "-f", $ComposeFile)
+
 # 2. .env Dosyasinin Olusturulmasi
 if (-not (Test-Path ".env")) {
     Write-Host ".env.example kopyalanarak .env dosyasi olusturuluyor..." -ForegroundColor Yellow
@@ -89,7 +92,7 @@ if ($envContent -match "^REDIS_PASSWORD=\s*$") {
 
 # 5. Host Klasorlerinin Ayarlanmasi
 Write-Host "Gerekli klasorler olusturuluyor..." -ForegroundColor Yellow
-$folders = @("logs", "screenshots", "certs", "backups")
+$folders = @("logs", "screenshots", "certs", "backups", "data")
 foreach ($folder in $folders) {
     if (-not (Test-Path $folder)) {
         New-Item -ItemType Directory -Force -Path $folder | Out-Null
@@ -103,22 +106,10 @@ Write-Host ""
 $startNow = Read-Host "Sistemi simdi baslatmak ister misiniz? (Y/n)"
 if ([string]::IsNullOrEmpty($startNow) -or $startNow -match "^[Yy]$") {
     Write-Host "Docker Compose ile sistem baslatiliyor..." -ForegroundColor Cyan
+    docker @ComposeArgs up -d
 
-    # Once DB + Redis are healthy, run migrations once, then start all services.
-    Write-Host "PostgreSQL ve Redis baslatiliyor..." -ForegroundColor Cyan
-    docker compose up -d postgres redis
-
-    Write-Host "Veritabaninin hazir olmasi bekleniyor..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 5
-
-    Write-Host "Alembic migration'lari calistiriliyor (upgrade head)..." -ForegroundColor Cyan
-    docker compose run --rm bot alembic upgrade head
-
-    Write-Host "Tum servisler baslatiliyor..." -ForegroundColor Cyan
-    docker compose up -d
-
-    Write-Host "Sistem baslatildi! Loglari gormek icin: docker compose logs -f bot" -ForegroundColor Green
+    Write-Host "Sistem baslatildi! Loglari gormek icin: docker compose -f $ComposeFile logs -f bot worker" -ForegroundColor Green
 } else {
-    Write-Host "Kurulum tamamlandi. Istediginiz zaman 'docker compose up -d' ile baslatabilirsiniz."
+    Write-Host "Kurulum tamamlandi. Istediginiz zaman 'docker compose -f $ComposeFile up -d' ile baslatabilirsiniz."
 }
 Write-Host "Iyi dersler!" -ForegroundColor Yellow

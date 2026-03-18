@@ -707,7 +707,7 @@ def get_onboarding_handler() -> ConversationHandler:
         },
         fallbacks=[CommandHandler("cancel", cancel_command)],
         name="onboarding",
-        persistent=False,
+        persistent=True,
         allow_reentry=True,
         block=False,
     )

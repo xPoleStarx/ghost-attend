@@ -481,12 +481,12 @@ async def _handle_chat_online_start(update: Update, context: ContextTypes.DEFAUL
 
     lines = ["🤖 **Online Ders Düzenleme Chatbot**\n"]
     lines.append("Online ve belirsiz dersler:\n")
-        for i, c in enumerate(online_courses):
+    for i, c in enumerate(online_courses):
         status = "🟢 Online" if c.get("online_mi") is True else "❓ Belirsiz"
-            end_text = c.get("bitis_saati") or "?"
-            lines.append(
-                f"  {i+1}. **{c['ders_adi']}** — {c['gun']} {c['baslangic_saati']}–{end_text} [{status}]"
-            )
+        end_text = c.get("bitis_saati") or "?"
+        lines.append(
+            f"  {i+1}. **{c['ders_adi']}** — {c['gun']} {c['baslangic_saati']}–{end_text} [{status}]"
+        )
 
     lines.append("\n💬 Bu dersler hakkında değişiklik yapmak için yazabilirsin.")
     lines.append("Örnek: _'Kariyer Planlama aslında Salı 14:00'te'_")
@@ -768,7 +768,7 @@ def get_schedule_upload_handler() -> ConversationHandler:
         },
         fallbacks=[CommandHandler("cancel", _cancel_schedule)],
         name="schedule_upload",
-        persistent=False,
+        persistent=True,
         block=False,
     )
 

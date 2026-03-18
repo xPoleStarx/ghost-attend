@@ -8,7 +8,9 @@ Production'da webhook, development'ta polling kullanır.
 import asyncio
 
 import redis.asyncio as aioredis
-from telegram.ext import Application, CommandHandler
+from pathlib import Path
+
+from telegram.ext import Application, CommandHandler, PicklePersistence
 
 # Celery app'i import ederek process-wide default/current set edilmesini garanti et.
 # Bu sayede bot process'i içinden publish edilen task'lar Redis broker'a gider.
@@ -32,7 +34,15 @@ def create_application() -> Application:
     """Telegram bot Application oluştur ve handler'ları register et."""
 
     # Merkezi metin sanitize katmanı için SafeExtBot kullan.
-    builder = Application.builder().bot(SafeExtBot(token=settings.TELEGRAM_BOT_TOKEN))
+    persistence_path = Path("data") / "ptb_persistence.pkl"
+    persistence_path.parent.mkdir(parents=True, exist_ok=True)
+    persistence = PicklePersistence(filepath=str(persistence_path))
+
+    builder = (
+        Application.builder()
+        .bot(SafeExtBot(token=settings.TELEGRAM_BOT_TOKEN))
+        .persistence(persistence)
+    )
 
     app = builder.build()
 
