@@ -50,7 +50,7 @@ chmod +x Run.sh
 
 İsteğe bağlı: `export GHOST_ATTEND_PYTHON=/usr/bin/python3`
 
-Aynı mantık: venv, `requirements.txt`, editable kurulum, Playwright, `.env`, bot.
+Aynı mantık: venv, `pip install -e .`, Playwright, `.env`, bot.
 
 ### Docker (sistemde Python yoksa)
 
@@ -108,6 +108,18 @@ make test       # pytest
 | `BROWSER_STEP_TIMEOUT` | Hayır | Adım zaman aşımı saniye (varsayılan `180`) |
 
 Şablon: [`.env.example`](.env.example)
+
+---
+
+## Telegram’da kullanım
+
+| Ne | Açıklama |
+|----|----------|
+| **İlk mesaj** | Botu Telegram’da açıp doğrudan yazabilirsiniz; `/start` şart değil. İlk mesajınız LangGraph + Gemini ile işlenir. |
+| `/start` | Kısa karşılama metni + `/tarayici` ipucu gönderir (önerilir; özellikle komutları hatırlamak için). |
+| `/tarayici` | Bu sohbet için açık **browser-use** oturumunu kapatır; sonraki web görevi yeni Chromium penceresi açar. |
+
+Komutlar: [`app/telegram/bot.py`](app/telegram/bot.py) içinde `CommandHandler` ile tanımlı.
 
 ---
 
