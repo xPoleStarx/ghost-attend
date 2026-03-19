@@ -1,27 +1,27 @@
-# Hızlı başlangıç
+# Quick start
 
-## Gereken hesaplar / anahtarlar
+## Accounts / keys you need
 
 - [Telegram BotFather](https://t.me/BotFather) → bot token  
 - [Google AI Studio](https://aistudio.google.com/app/apikey) → `GOOGLE_API_KEY`
 
-## 1. Repoyu indir
+## 1. Clone the repo
 
 ```bash
-git clone <bu-reponun-git-url-i>
+git clone <this-repo-git-url>
 cd ghost-attend
 ```
 
-## 2. Ortam dosyası
+## 2. Environment file
 
 ```bash
 cp .env.example .env
 # Windows: Copy-Item .env.example .env
 ```
 
-`.env` içinde en az: `TELEGRAM_BOT_TOKEN`, `GOOGLE_API_KEY`.
+In `.env` at minimum: `TELEGRAM_BOT_TOKEN`, `GOOGLE_API_KEY`.
 
-## 3. Tek komutla kur + çalıştır
+## 3. One-command install + run
 
 ### Windows
 
@@ -29,7 +29,7 @@ cp .env.example .env
 .\Run.ps1
 ```
 
-veya `run.bat` (çift tık).
+Or `run.bat` (double-click).
 
 ### Linux / macOS
 
@@ -44,41 +44,41 @@ chmod +x Run.sh
 docker compose up --build
 ```
 
-## 4. Manuel (betik kullanmadan)
+## 4. Manual (without the scripts)
 
-**Python 3.11+** ve `pip` gerekir.
+You need **Python 3.11+** and `pip`.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install --upgrade pip setuptools wheel
 pip install -e .
-# veya: pip install -r requirements.txt && pip install -e .
+# or: pip install -r requirements.txt && pip install -e .
 python -m playwright install chromium
 python -m app.main
 ```
 
-`requirements.txt` ile `pyproject.toml` aynı sürüm aralıklarını taşır; tek satır `pip install -e .` yeterlidir.
+`requirements.txt` mirrors version ranges from `pyproject.toml`; a single `pip install -e .` is enough.
 
-Geliştirici araçları: `pip install -e ".[dev]"`
+Dev dependencies: `pip install -e ".[dev]"`
 
-## Betik parametreleri (Run.ps1 / Run.sh)
+## Script flags (Run.ps1 / Run.sh)
 
-| Parametre | Windows | Linux/macOS |
-|-----------|---------|-------------|
-| Sadece kurulum | `-InstallOnly` | `--install-only` |
-| Kurulum atla | `-SkipInstall` | `--skip-install` |
-| Bağımlılığı yeniden kur | `-ForceInstall` | `--force-install` |
-| `.env` bekletmeden devam | `-NonInteractive` | `--non-interactive` |
+| Flag | Windows | Linux/macOS |
+|------|---------|-------------|
+| Install only | `-InstallOnly` | `--install-only` |
+| Skip install | `-SkipInstall` | `--skip-install` |
+| Force reinstall | `-ForceInstall` | `--force-install` |
+| Non-interactive (no `.env` prompt) | `-NonInteractive` | `--non-interactive` |
 
-## Python bulunamıyor (Windows)
+## Python not found (Windows)
 
 ```powershell
 $env:GHOST_ATTEND_PYTHON = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
 .\Run.ps1
 ```
 
-## PowerShell betiği engelleniyor
+## PowerShell script is blocked
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned

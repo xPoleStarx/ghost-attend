@@ -1,19 +1,19 @@
-# Katkı rehberi
+# Contributing
 
-Teşekkürler. Küçük ve odaklı değişiklikler en kolay birleşir.
+Thanks. Small, focused changes are the easiest to merge.
 
-## Geliştirme ortamı
+## Development setup
 
-1. Depoyu klonlayın, [README.md](README.md) içindeki kurulumu izleyin (tercihen `Run.ps1` / `Run.sh`).
-2. `.env` dosyasını **commit etmeyin**; `.env.example` şablonunu kullanın.
-3. Test: proje kökünde `python -m pytest` (veya `make test`).
+1. Clone the repo and follow [README.md](README.md) (prefer `Run.ps1` / `Run.sh`).
+2. Do **not** commit `.env`; use `.env.example` as a template.
+3. Tests: from the project root, `python -m pytest` (or `make test`).
 
-## Pull request
+## Pull requests
 
-- Tek konuya odaklı PR’lar tercih edilir.
-- Mümkünse `pytest` yeşil kalsın.
-- API anahtarları, token veya kişisel veri eklemeyin.
+- Prefer one topic per PR.
+- Keep `pytest` green when possible.
+- Do not add API keys, tokens, or personal data.
 
-## Sorun bildirimi
+## Reporting issues
 
-Hata raparında mümkünse: işletim sistemi, Python sürümü, ilgili `.env` anahtarlarını **değer vermeden** (ör. “Gemini 400” gibi) ve kısa yeniden üretim adımları.
+When reporting bugs, please include: OS, Python version, relevant `.env` keys **without values** (e.g. “Gemini 400”), and short steps to reproduce.
