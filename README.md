@@ -8,7 +8,8 @@
 
 ## What It Does
 
-- Guides the student through onboarding in Telegram
+- Guides the student through LLM-managed onboarding in Telegram from the very first `/start`
+- Reads schedule screenshots with the configured multimodal LLM and converts them into structured course lines
 - Stores credentials securely and uses them to log into the university DYS portal
 - Opens the course's Microsoft Teams meeting in an isolated browser context
 - Sends proactive notifications before class
@@ -38,20 +39,55 @@
 ### Prerequisites
 
 - Docker and Docker Compose
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- At least one supported LLM provider key
+- For real Telegram usage: a bot token from [@BotFather](https://t.me/BotFather)
+- For real LLM-driven browser flows: at least one supported LLM provider key
 
-### Setup
+### Fastest Start
+
+This repository can be booted even before you configure Telegram or LLM keys.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ghost-attend
+git clone https://github.com/xPoleStarx/ghost-attend
+cd ghost-attend
+docker compose up -d --build
+```
+
+What happens in this mode:
+
+- PostgreSQL and Redis start
+- the app waits for the database
+- migrations are applied automatically
+- the bot container stays alive in standby mode if `TELEGRAM_BOT_TOKEN` is missing
+
+This is the easiest smoke test to confirm the stack boots correctly.
+
+### Real Setup
+
+```bash
+git clone https://github.com/xPoleStarx/ghost-attend
 cd ghost-attend
 cp .env.example .env
-# Fill in the required values
+# Fill in TELEGRAM_BOT_TOKEN and one LLM key
 docker compose up -d --build
 ```
 
 Then open Telegram, find your bot, and send `/start`.
+
+### One-Command Env Creation
+
+Windows PowerShell:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+macOS / Linux:
+
+```bash
+sh ./scripts/setup.sh
+```
+
+These scripts create `.env` from `.env.example` if it does not exist.
 
 ## Environment Variables
 
@@ -67,12 +103,19 @@ Then open Telegram, find your bot, and send `/start`.
 | `REDIS_URL` | yes | Redis broker/result backend URL |
 | `SECRET_KEY` | yes | 32-byte hex string used for credential encryption |
 | `BROWSER_HEADLESS` | yes | `true` in production, `false` for local debugging |
+| `PLAYWRIGHT_EXECUTABLE_PATH` | no | Optional explicit Chromium/Chrome executable path |
 | `PAGE_TIMEOUT` | yes | Per-page timeout in milliseconds |
 | `MAX_RETRIES` | yes | Retry count for recoverable tool failures |
 | `WORKER_CONCURRENCY` | yes | Celery worker concurrency |
 | `DEFAULT_TIMEZONE` | no | Fallback timezone, default `Europe/Istanbul` |
 
 See `.env.example` for the current reference values.
+
+### What You Do Not Need To Do Manually
+
+- You do not need to run Alembic manually for the default Docker path
+- You do not need to install Python locally if you are using Docker only
+- You do not need to create PostgreSQL or Redis manually if you use `docker compose`
 
 ## Documentation Map
 

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghost-attend"
+version = "0.1.0"
+description = "Telegram-first attendance agent for DYS-based universities."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ghost Attend" }]
+dependencies = [
+  "alembic>=1.14.1",
+  "APScheduler>=3.10.4",
+  "asyncpg>=0.30.0",
+  "browser-use>=0.1.40",
+  "celery[redis]>=5.4.0",
+  "cryptography>=44.0.0",
+  "langgraph>=0.2.74",
+  "playwright>=1.50.0",
+  "pydantic>=2.10.6",
+  "pydantic-settings>=2.7.1",
+  "python-telegram-bot>=22.0",
+  "redis>=5.2.1",
+  "SQLAlchemy>=2.0.37",
+  "structlog>=25.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.15.0",
+  "pytest>=8.3.4",
+  "pytest-asyncio>=0.25.3",
+  "ruff>=0.9.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["py.typed"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["app"]

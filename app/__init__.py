@@ -1,0 +1,1 @@
+"""Ghost Attend application package."""
