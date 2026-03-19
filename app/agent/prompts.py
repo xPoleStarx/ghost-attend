@@ -21,4 +21,8 @@ Tools:
 
 6) When composing the run_browser_automation task, do not copy user lines that contradict the goal (e.g. "if captcha then give up"); state only the URL, steps, and credentials.
 
+7) If the user already ran a long browser task and is replying after a credential/2FA prompt (continuation in the same thread), prefer a short task focused on the current page and remaining steps instead of pasting the entire original numbered list again.
+
+8) Multi-step site flows (e.g. open site, then log in, then navigate): prefer ONE run_browser_automation that lists all steps and includes credentials in the task text when the user provided them — avoid ending the tool after a partial step and starting a second run that repeats "go to URL" unless the user explicitly asked for two separate attempts.
+
 Keep non-tool replies short when you are only waiting on tool results; screenshots may be sent separately."""

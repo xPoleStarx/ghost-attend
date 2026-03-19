@@ -209,9 +209,38 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "screenshot_png": png,
         }
 
-        context.chat_data["awaiting_resume"] = bool(intrs)
+        pending_snap = await _pending_interrupt(graph, config)
+        context.chat_data["awaiting_resume"] = bool(intrs) or pending_snap
         await _send_interrupt_payloads(update, context, merged)
         await _send_regular_outputs(update, context, merged)
+
+
+async def on_reset_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Bu sohbet için LangGraph checkpoint + tarayıcı + bekleyen interrupt durumunu sıfırla."""
+    if not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    graph = context.application.bot_data["graph"]
+
+    async with chat_turn(chat_id):
+        try:
+            await _delete_thread_checkpoint(graph, str(chat_id))
+        except Exception:
+            logger.exception("reset: checkpoint silinemedi chat_id=%s", chat_id)
+        try:
+            await kill_session(str(chat_id))
+        except Exception:
+            logger.exception("reset: kill_session chat_id=%s", chat_id)
+        context.chat_data.pop("awaiting_resume", None)
+        pop_screenshot_png(str(chat_id))
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Bu sohbet için bağlam sıfırlandı: kayıtlı konuşma geçmişi ve görev durumu temizlendi, "
+            "tarayıcı oturumu kapatıldı. Yeni isteğini sıfırdan yazabilirsin."
+        ),
+    )
 
 
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -222,7 +251,9 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text=(
             "Merhaba. Ne istediğini doğal dilde yaz; görevi Gemini araçlarla (tarayıcı, ekran görüntüsü, sana soru) "
             "adım adım yürütür. Giriş veya 2FA gerekiyorsa sorarım.\n\n"
-            "Tarayıcı penceresini bot üzerinden kapatmak için: /tarayici"
+            "Önemli: Açılan Chromium sekmesini veya penceresini elle kapatma — oturum kurtarma döngüsüne girebilirsin. "
+            "Kapatmak için her zaman: /tarayici\n\n"
+            "Eski konuşmayı unutturup sıfırdan başlamak: /temizle veya /reset (tarayıcıyı da kapatır)"
         ),
     )
 
@@ -240,5 +271,9 @@ async def on_close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     await context.bot.send_message(
         chat_id=chat_id,
-        text="Tarayıcı oturumu kapatıldı. Bir sonraki görev yeni bir pencere açar.",
+        text=(
+            "Tarayıcı oturumu kapatıldı. Sonraki web görevi yeni bir pencere açar.\n\n"
+            "İleride sekmeyi elle kapatmak yerine yine /tarayici kullan; aksi halde logda "
+            "'detached / No tabs remain' uyarıları ve takılma oluşabilir."
+        ),
     )

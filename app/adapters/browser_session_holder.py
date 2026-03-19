@@ -1,10 +1,16 @@
-"""Telegram thread başına tek browser-use BrowserSession — HITL sonrası sayfa/CAPTCHA korunur."""
+"""Telegram thread başına tek browser-use BrowserSession — HITL sonrası sayfa/CAPTCHA korunur.
+
+Sekme veya pencereyi elle kapatmak, browser-use SessionManager'ın sekme kurtarma döngüsüne
+girmesine yol açabilir; kapatma için Telegram'da kill_session (/tarayici) kullanılmalı.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
+
+from app.adapters.hitl_pending import clear_pending_hitl
 
 if TYPE_CHECKING:
     from app.config.settings import Settings
@@ -74,6 +80,7 @@ async def get_session(thread_id: str, settings: "Settings") -> Any:
 
 async def kill_session(thread_id: str) -> None:
     """Sohbet için önbellekteki oturumu kapat (manuel /tarayici veya sıfırlama)."""
+    clear_pending_hitl(thread_id)
     async with _lock_for(thread_id):
         sess = _sessions.pop(thread_id, None)
     if sess is not None:

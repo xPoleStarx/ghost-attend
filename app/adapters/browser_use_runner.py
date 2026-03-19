@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from typing import Any
 
+from app.adapters.hitl_pending import (
+    clear_pending_hitl,
+    record_pending_hitl,
+    take_synthetic_hints_if_orphan,
+)
 from app.adapters.browser_session_holder import get_session
 from app.config.settings import Settings
 from app.domain.schemas import BrowserRunResult, BrowserRunStatus
@@ -64,18 +70,24 @@ _TASK_BOOTSTRAP = (
     "Yalnızca gerçekten insan doğrulaması gerekiyorsa dur.\n\n"
 )
 
+_RESUME_PRIORITY_NOTE = (
+    "[Devam turu] Aşağıdaki numaralı liste tam görev tanımıdır; önce [Oturum] ve [Kullanıcıdan gelen ek bilgi] bölümlerine uyun. "
+    "Numaralı adımları sıfırdan uygulama; bunlar bağlam ve hedef özetidir.\n\n"
+)
+
 
 def _merge_task(task: str, hints: list[str]) -> str:
-    task = (_TASK_BOOTSTRAP + task.strip()).strip()
+    base = (_TASK_BOOTSTRAP + task.strip()).strip()
     if not hints:
-        return task
+        return base
     extra = "\n".join(h.strip() for h in hints if h.strip())
     continuation = (
-        "\n\n[Oturum] Tarayıcı bu sohbet için aynı oturumda açık kaldı; ana sayfaya baştan gitme. "
-        "Mümkünse mevcut sayfada kal, CAPTCHA veya form durumunu koru. "
-        "Yalnızca takılırsan gerekli minimum adımı yap.\n"
+        "\n\n[Oturum] Tarayıcı bu sohbet için aynı oturumda açık kaldı. "
+        "Numaralı görev listesindeki daha önce tamamlanmış adımları TEKRARLAMA; liste tam hedefi hatırlatmak içindir. "
+        "İlk eylemin mevcut URL ve sayfa durumuna göre olmalı — ana sayfaya veya listenin başındaki siteye gereksiz yere dönme. "
+        "Mümkünse mevcut sayfada kal; CAPTCHA veya form durumunu koru. Yalnızca takılırsan gerekli minimum navigasyonu yap.\n"
     )
-    return f"{task}{continuation}\n[Kullanıcıdan gelen ek bilgi]\n{extra}"
+    return f"{_RESUME_PRIORITY_NOTE}{base}{continuation}\n[Kullanıcıdan gelen ek bilgi]\n{extra}"
 
 
 def _looks_like_login_surface(url: str, title: str) -> bool:
@@ -86,6 +98,48 @@ def _looks_like_login_surface(url: str, title: str) -> bool:
     if any(s in t for s in ("sign in", "log in", "login", "giriş", "oturum")):
         return True
     return False
+
+
+# Giriş sayfasında kalıp yalnızca formu/ekranı incelemek — kimlik istemeden HITL kesilmesin.
+_LOGIN_HITL_SUPPRESS_PHRASES = (
+    "do not attempt to log in",
+    "don't attempt to log in",
+    "do not log in yet",
+    "don't log in yet",
+    "without logging in",
+    "do not log in,",
+    "don't log in,",
+    "just confirm you are at the login",
+    "only confirm",
+    "not attempt to log in",
+    "giriş yapma",
+    "henüz giriş",
+    "giriş yapmayın",
+    "giriş yapmadan",
+    "şifre girmeden",
+    "sadece doğrula",
+    "sadece ekranı doğrula",
+    "yalnızca doğrula",
+)
+
+
+def _task_suppresses_login_surface_hitl(full_task: str) -> bool:
+    low = (full_task or "").lower()
+    return any(p in low for p in _LOGIN_HITL_SUPPRESS_PHRASES)
+
+
+_INLINE_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Örn: password '...' veya şifre '...' — görevde kimlik zaten yazılıyken HITL ile kesmeyelim.
+_INLINE_PASSWORD_QUOTED = re.compile(
+    r"(?i)(password|şifre|sifre)\s*['\"]([^'\"]{2,})['\"]",
+)
+
+
+def _task_has_inline_credentials(full_task: str) -> bool:
+    """Görev metninde e-posta + tırnaklı şifre (veya şifre alanı) varsa giriş HITL atlanır."""
+    if not full_task or not _INLINE_EMAIL.search(full_task):
+        return False
+    return bool(_INLINE_PASSWORD_QUOTED.search(full_task))
 
 
 def _agent_suggests_sensitive(agent_output: Any) -> bool:
@@ -204,6 +258,12 @@ class BrowserUseRunner:
         thread_id: str = "default",
     ) -> BrowserRunResult:
         hints_list = list(hints or [])
+        if hints_list:
+            clear_pending_hitl(thread_id)
+        else:
+            syn = take_synthetic_hints_if_orphan(thread_id)
+            if syn:
+                hints_list = list(syn)
         full_task = _merge_task(task, hints_list)
         holder: dict[str, Any] = {
             "stop": False,
@@ -229,6 +289,16 @@ class BrowserUseRunner:
                     logger.info("HITL defer: captcha/güvenlik kodu adımı — iç ajanın çözmesine izin veriliyor")
                     return
                 if _looks_like_login_surface(url, title):
+                    if _task_suppresses_login_surface_hitl(full_task):
+                        logger.info(
+                            "HITL defer: görev giriş yapmadan gözlem/doğrulama istiyor — login yüzeyi kesilmiyor"
+                        )
+                        return
+                    if _task_has_inline_credentials(full_task):
+                        logger.info(
+                            "HITL defer: görev metninde satır içi e-posta/şifre var — iç ajanın doldurmasına izin veriliyor"
+                        )
+                        return
                     holder["reason"] = "login_or_auth_surface"
                     holder["agent_context"] = _agent_context_blurb(agent_output)
                     holder["stop"] = True
@@ -258,6 +328,7 @@ class BrowserUseRunner:
             history = await agent.run(max_steps=self._settings.browser_max_steps)
         except Exception as e:
             logger.exception("browser-use run failed")
+            clear_pending_hitl(thread_id)
             return BrowserRunResult(
                 status=BrowserRunStatus.ERROR,
                 summary="Tarayıcı görevi sırasında hata oluştu.",
@@ -278,6 +349,12 @@ class BrowserUseRunner:
                 tail = history.final_result()  # type: ignore[attr-defined]
             except Exception:
                 tail = None
+            reason_raw = holder.get("reason")
+            record_pending_hitl(
+                thread_id,
+                holder.get("url"),
+                str(reason_raw) if reason_raw is not None else None,
+            )
             return BrowserRunResult(
                 status=BrowserRunStatus.NEEDS_HUMAN,
                 summary="",
@@ -285,6 +362,7 @@ class BrowserUseRunner:
                 screenshot_png=holder.get("shot"),
                 question=q,
                 history_tail=str(tail) if tail is not None else None,
+                hitl_reason=str(reason_raw) if reason_raw is not None else None,
             )
 
         final_text: str | None = None
@@ -293,6 +371,7 @@ class BrowserUseRunner:
         except Exception:
             final_text = None
         summary = str(final_text).strip() if final_text else "Görev tamamlandı."
+        clear_pending_hitl(thread_id)
         return BrowserRunResult(
             status=BrowserRunStatus.DONE,
             summary=summary,

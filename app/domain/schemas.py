@@ -32,6 +32,7 @@ class BrowserRunResult:
     screenshot_png: bytes | None = None
     question: str | None = None
     history_tail: str | None = None
+    hitl_reason: str | None = None
     raw_error: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 

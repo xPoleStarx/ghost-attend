@@ -11,12 +11,41 @@ from langgraph.types import interrupt
 from app.adapters.browser_use_runner import BrowserUseRunner
 from app.adapters.screenshot import capture_url_png
 from app.agent.media_delivery import stash_screenshot_png
-from app.domain.schemas import BrowserRunStatus
+from app.domain.schemas import BrowserRunResult, BrowserRunStatus
 
 if TYPE_CHECKING:
     from app.config.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+_HITL_TAIL_MAX = 4000
+
+
+def _hitl_reason_label(reason: str | None) -> str:
+    if not reason:
+        return "bilinmiyor"
+    if reason == "login_or_auth_surface":
+        return "giriş veya kimlik doğrulama ekranı"
+    if reason == "model_indicated_sensitive_step":
+        return "hassas adım (şifre, OTP, 2FA vb.)"
+    return str(reason)
+
+
+def _continuation_block_after_hitl(result: BrowserRunResult) -> str:
+    tail = (result.history_tail or "").strip()
+    if len(tail) > _HITL_TAIL_MAX:
+        tail = tail[:_HITL_TAIL_MAX] + "\n…[kısaltıldı]"
+    lines = [
+        "[Otomatik devam bağlamı — kesintiden hemen sonra]",
+        f"Durma nedeni: {_hitl_reason_label(result.hitl_reason)}",
+        f"Son URL: {result.last_url or '(bilinmeyen)'}",
+        "Son ajan çıktısı / özet:",
+        tail or "(özet yok)",
+        "",
+        "Kurallar: Numaralı listedeki adımları baştan sırayla uygulama; mevcut sayfayı ve oturumu esas al. "
+        "Yalnızca kalan hedefe ilerle; gereksiz tekrar navigasyon yapma.",
+    ]
+    return "\n".join(lines)
 
 
 def _thread_id_from_context() -> str:
@@ -78,6 +107,11 @@ def build_task_tools(settings: "Settings"):
                 text = str(resume_value).strip() if resume_value is not None else ""
                 if text:
                     hints.append(text)
+                else:
+                    hints.append(
+                        "[Kullanıcı yanıtı boş; mevcut tarayıcı sayfasında ve oturumda devam et]"
+                    )
+                hints.append(_continuation_block_after_hitl(result))
                 continue
             if result.status == BrowserRunStatus.ERROR:
                 msg = result.summary

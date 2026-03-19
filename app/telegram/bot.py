@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from app.config.settings import Settings
 from app.graph.builder import build_compiled_graph
 from app.persistence.checkpointer import create_checkpointer
-from app.telegram.handlers import on_close_browser, on_start, on_text_message
+from app.telegram.handlers import on_close_browser, on_reset_context, on_start, on_text_message
 
 
 async def _post_init(application: Application) -> None:
@@ -28,6 +28,8 @@ def run_bot(settings: Settings) -> None:
     application.bot_data["settings"] = settings
 
     application.add_handler(CommandHandler("start", on_start))
+    application.add_handler(CommandHandler("temizle", on_reset_context))
+    application.add_handler(CommandHandler("reset", on_reset_context))
     application.add_handler(CommandHandler("tarayici", on_close_browser))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
 
