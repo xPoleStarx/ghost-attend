@@ -1,1 +1,0 @@
-# GhostAttend Database Repositories

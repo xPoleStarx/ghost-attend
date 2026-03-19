@@ -1,1 +1,0 @@
-# GhostAttend API Package

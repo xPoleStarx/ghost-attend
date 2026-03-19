@@ -1,1 +1,0 @@
-# GhostAttend Core Package

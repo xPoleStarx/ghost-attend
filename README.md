@@ -1,234 +1,106 @@
-# GhostAttend
+# Ghost Attend
 
-GhostAttend is a self-hosted automation system that joins university live classes on behalf of the user through a Telegram bot, a scheduler, and a browser automation worker.
+> A Telegram-first attendance agent for DYS-based university courses that logs in, joins Teams classes, and keeps the student in the loop only when needed.
 
-It is designed for deployments where the user controls the infrastructure, stores credentials locally, and wants visibility into every important step of the automation lifecycle.
+[![CI](https://github.com/YOUR_USERNAME/ghost-attend/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/ghost-attend/actions)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Overview
+## What It Does
 
-GhostAttend combines four main capabilities:
+- Guides the student through onboarding in Telegram
+- Stores credentials securely and uses them to log into the university DYS portal
+- Opens the course's Microsoft Teams meeting in an isolated browser context
+- Sends proactive notifications before class
+- Requests human input only for genuinely blocking situations such as 2FA or ambiguous confirmations
+- Supports many concurrent students with per-user isolation
 
-- Telegram-based onboarding and control
-- schedule ingestion from image or text
-- scheduled execution through APScheduler and Celery
-- browser automation through Playwright and `browser-use`
+## Product Boundaries
 
-In practice, the system can:
+- First-class support is limited to universities whose DYS flow has been validated by tests or manual verification
+- Other DYS-based universities are treated as experimental until their login and meeting flows are verified
+- Cookies are kept in memory only; after a container restart, the system performs session recovery by creating a fresh browser context and re-running login when policy allows
 
-- collect and securely store DYS / university portal credentials
-- parse course schedules from screenshots or text input
-- create recurring jobs before each lesson
-- log into the university system
-- locate the live class link
-- join the class with camera and microphone disabled
-- send progress updates and screenshots back to Telegram
+## Core Technical Decisions
 
-## Architecture
+- Queue standard: Redis + Celery
+- Orchestration: LangGraph with one thread per `session_id`
+- Browser control split:
+  - Browser-use handles semantic navigation and intent-level browser tasks
+  - Playwright handles deterministic browser primitives such as context lifecycle, permissions, screenshots, tab management, and waiting for page state
+- Persistence model:
+  - `users` hold durable profile and schedule ownership
+  - `sessions` hold runtime conversation and browser lifecycle state
+  - `courses` belong to the user, not the session
 
-At a high level the runtime looks like this:
+## Quickstart
 
-```text
-Telegram Bot <-> Redis <-> Celery Worker <-> Playwright / browser-use
-      |              |             |
-      v              v             v
-  PostgreSQL     APScheduler     LLM-backed agent flow
-```
+### Prerequisites
 
-Core services:
+- Docker and Docker Compose
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+- At least one supported LLM provider key
 
-- `bot`: Telegram interaction layer
-- `worker`: task execution and browser automation
-- `scheduler`: recurring job orchestration
-- `postgres`: persistent application state
-- `redis`: queue, state, and scheduler persistence
+### Setup
 
-Detailed architecture notes live in [architecture.md](architecture.md).
-
-## Quick Start
-
-The recommended flow is:
-
-1. clone the repository
-2. run the platform-specific setup script once
-3. use the `dev` helper script for daily operations
-
-### Windows
-
-```powershell
-git clone https://github.com/xPoleStarx/ghost-attend.git
+```bash
+git clone https://github.com/YOUR_USERNAME/ghost-attend
 cd ghost-attend
-powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+cp .env.example .env
+# Fill in the required values
+docker compose up -d --build
 ```
 
-### Linux / macOS
+Then open Telegram, find your bot, and send `/start`.
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | yes | Telegram bot token from @BotFather |
+| `LLM_PROVIDER` | yes | `gemini`, `openai`, or `anthropic` |
+| `LLM_MODEL` | yes | Provider-specific model name |
+| `GOOGLE_API_KEY` | if gemini | Google AI Studio API key |
+| `OPENAI_API_KEY` | if openai | OpenAI API key |
+| `ANTHROPIC_API_KEY` | if anthropic | Anthropic API key |
+| `DATABASE_URL` | yes | PostgreSQL connection string |
+| `REDIS_URL` | yes | Redis broker/result backend URL |
+| `SECRET_KEY` | yes | 32-byte hex string used for credential encryption |
+| `BROWSER_HEADLESS` | yes | `true` in production, `false` for local debugging |
+| `PAGE_TIMEOUT` | yes | Per-page timeout in milliseconds |
+| `MAX_RETRIES` | yes | Retry count for recoverable tool failures |
+| `WORKER_CONCURRENCY` | yes | Celery worker concurrency |
+| `DEFAULT_TIMEZONE` | no | Fallback timezone, default `Europe/Istanbul` |
+
+See `.env.example` for the current reference values.
+
+## Documentation Map
+
+- [AGENTS.md](AGENTS.md): authoritative internal architecture and implementation rules
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): clarified system contracts and operating model
+- [docs/ROADMAP.md](docs/ROADMAP.md): phased delivery plan and milestone exit criteria
+- [CONTRIBUTING.md](CONTRIBUTING.md): development workflow
+- [SECURITY.md](SECURITY.md): security model and vulnerability reporting
+
+## Development
 
 ```bash
-git clone https://github.com/xPoleStarx/ghost-attend.git
-cd ghost-attend
-bash scripts/setup.sh
+pip install -e ".[dev]"
+pytest
+ruff check .
+mypy .
 ```
 
-## What the Setup Script Does
+## Current Maturity
 
-The setup scripts are intended to reduce manual configuration to a minimum. They:
+This repository is being built in deliberate phases. The current standard is not "ship the MVP as fast as possible" but "establish clean contracts, then implement in slices without compromising future maintainability."
 
-- create `.env` from `.env.example` if needed
-- ask for the Telegram bot token
-- ask for one LLM provider API key
-- generate `MASTER_ENCRYPTION_KEY`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD`
-- synchronize `DATABASE_URL` and `REDIS_URL` with the generated credentials
-- start the development stack with a build
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the phase plan.
 
-Authoritative setup details are documented in [docs/SETUP.md](docs/SETUP.md).
+## Security
 
-## Daily Operations
-
-After the first installation, you should not need to remember raw `docker compose` commands.
-
-### Windows
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 up
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 rebuild
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 logs
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 ps
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 migrate
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 down
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 reset
-```
-
-### Linux / macOS
-
-```bash
-./scripts/dev.sh up
-./scripts/dev.sh rebuild
-./scripts/dev.sh logs
-./scripts/dev.sh ps
-./scripts/dev.sh migrate
-./scripts/dev.sh down
-./scripts/dev.sh reset
-```
-
-## Logs and Diagnostics
-
-To stream service logs from the terminal:
-
-### Development stack
-
-```powershell
-docker compose -f docker-compose.dev.yml logs -f bot worker scheduler
-```
-
-### Production stack
-
-```powershell
-docker compose -f docker-compose.yml logs -f bot worker scheduler
-```
-
-If you want logs for a single container:
-
-```powershell
-docker logs -f ghost-attend-worker-1
-docker logs -f ghost-attend-bot-1
-docker logs -f ghost-attend-scheduler-1
-```
-
-Equivalent shorthand via the helper script:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 logs
-```
-
-```bash
-./scripts/dev.sh logs
-```
-
-## Development Workflow
-
-Not every change requires the same action.
-
-### When restart is usually enough
-
-If you only changed Python files under `src/` while using `docker-compose.dev.yml`, the source code is mounted into the containers. In that case, restarting the relevant service is often enough.
-
-### When rebuild is required
-
-Use `rebuild` if you changed:
-
-- `docker-compose*.yml`
-- any `Dockerfile`
-- environment variables
-- Python dependencies
-- Playwright installation behavior
-- startup scripts
-
-If you are unsure, `rebuild` is the safest option.
-
-Recommended command:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 rebuild
-```
-
-or:
-
-```bash
-./scripts/dev.sh rebuild
-```
-
-### Database changes
-
-If a schema change is involved, also run migration:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 migrate
-```
-
-or:
-
-```bash
-./scripts/dev.sh migrate
-```
-
-## Environment Notes
-
-Important runtime notes:
-
-- development uses [`docker-compose.dev.yml`](docker-compose.dev.yml)
-- production uses [`docker-compose.yml`](docker-compose.yml)
-- worker and scheduler are forced into headless browser mode in containers
-- the bot can still keep a developer-friendly `.env`, but containerized worker execution remains headless by design
-
-## Security Model
-
-This project is designed around self-hosting and local control:
-
-- credentials are stored locally
-- encryption is used for credential persistence
-- browser execution happens inside your own infrastructure
-- progress is surfaced through Telegram notifications and screenshots
-
-See [docs/SECURITY.md](docs/SECURITY.md) for the security document.
-
-## Documentation Index
-
-- [Setup Guide](docs/SETUP.md)
-- [Trigger Smoke Test](docs/TRIGGER_TEST.md)
-- [Security](docs/SECURITY.md)
-- [Contributing](docs/CONTRIBUTING.md)
-- [Scenario Matrix](docs/SCENARIOS.md)
-- [Architecture](architecture.md)
-
-## Project Governance
-
-- Contributions are documented in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
-- Security expectations and disclosure guidance are documented in [docs/SECURITY.md](docs/SECURITY.md)
-- Licensing terms are defined in [LICENSE](LICENSE)
-
-## Disclaimer
-
-This repository is intended for educational and self-hosted automation use. Compatibility with university systems, institutional rules, and platform terms remains the responsibility of the deployer.
+Credentials are encrypted before storage, browser sessions are isolated per user, and session cookies are never persisted to disk or the database. See [SECURITY.md](SECURITY.md) for the full policy.
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
