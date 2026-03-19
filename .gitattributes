@@ -1,0 +1,2 @@
+# Bash betikleri her ortamda LF ile (Run.sh)
+*.sh text eol=lf

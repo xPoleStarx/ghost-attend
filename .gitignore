@@ -1,43 +1,74 @@
-# Secrets
+# --- Gizlilik / sırlar (asla commit etme) ---
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+*.secret
 
-# Python
+# --- Python ---
+.venv/
+venv/
+env/
+.python-version
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.python-version
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# --- Araçlar ---
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.nox/
+.hypothesis/
+coverage.xml
+*.cover
 
-# Virtual environments
-.venv/
-venv/
-env/
+# --- Veri / kalıcılık (token içerebilir veya kullanıcı verisi) ---
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
 
-# Build artifacts
-build/
-dist/
-*.egg-info/
+# --- Loglar ---
+*.log
+logs/
 
-# IDE / OS
-.DS_Store
-Thumbs.db
+# --- IDE / editör ---
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 
-# Runtime artifacts
-logs/
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Önbellek / geçici ---
+.cache/
 tmp/
-*.log
-*.sqlite3
-screenshots/
+temp/
+*.tmp
 
-# Playwright / browser
-playwright-report/
-test-results/
+# --- Paketleme / hatch ---
+.hatch/

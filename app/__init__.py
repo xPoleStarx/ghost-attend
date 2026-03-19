@@ -1,1 +1,1 @@
-"""Ghost Attend application package."""
+"""Ghost-attend: LangGraph orchestrated browser agent with Telegram."""

@@ -1,0 +1,15 @@
+# pyproject.toml ile aynı sınırlar (elle `pip install -r` için; Run.ps1 / Run.sh / Makefile: `pip install -e .` kullanır).
+# Önerilen kurulum:  pip install -e .
+# Geliştirici:         pip install -e ".[dev]"
+
+langgraph>=0.2.55
+langgraph-checkpoint-sqlite>=2.0
+aiosqlite>=0.20
+langchain-core>=1.2.5,<2.0
+langchain-google-genai>=4.2,<5
+pydantic>=2.0
+pydantic-settings>=2.0
+python-telegram-bot[rate-limiter]>=21.0
+browser-use>=0.4.0
+google-genai>=1.0.0
+playwright>=1.40.0

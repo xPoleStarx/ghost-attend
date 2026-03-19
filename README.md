@@ -1,149 +1,144 @@
-# Ghost Attend
+# ghost-attend
 
-> A Telegram-first attendance agent for DYS-based university courses that logs in, joins Teams classes, and keeps the student in the loop only when needed.
+Telegram üzerinden konuşan, **LangGraph** + **browser-use** (Playwright) + **Google Gemini** ile web’de görev yapan bot. Giriş / hassas adımlarda durur, ekran görüntüsü ve soru gönderir; yanıtınızla devam eder (HITL).
 
-[![CI](https://github.com/YOUR_USERNAME/ghost-attend/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/ghost-attend/actions)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+**Hızlı yol:** depoyu klonla → `.env` doldur → `.\Run.ps1` (Windows) veya `./Run.sh` (Linux/macOS). Aşağıdaki tabloda ayrıntılar var.
 
-## What It Does
+---
 
-- Guides the student through LLM-managed onboarding in Telegram from the very first `/start`
-- Reads schedule screenshots with the configured multimodal LLM and converts them into structured course lines
-- Stores credentials securely and uses them to log into the university DYS portal
-- Opens the course's Microsoft Teams meeting in an isolated browser context
-- Sends proactive notifications before class
-- Requests human input only for genuinely blocking situations such as 2FA or ambiguous confirmations
-- Supports many concurrent students with per-user isolation
+## Klonladıktan sonra (özet)
 
-## Product Boundaries
+| Adım | Ne yapılır |
+|------|------------|
+| 1 | Depoyu klonla: `git clone …` ve klasöre gir |
+| 2 | **Python 3.11+** kur ([python.org](https://www.python.org/downloads/)); Windows’ta **“Add python.exe to PATH”** işaretle |
+| 3 | **`.env`** hazırla: `.env.example` → `.env`, içine `TELEGRAM_BOT_TOKEN` ve `GOOGLE_API_KEY` yaz |
+| 4 | **Tek komut** betiklerinden birini çalıştır: venv → `pip install -e .` (bağımlılıklar [`pyproject.toml`](pyproject.toml) üzerinden) → Playwright Chromium → import testi → bot |
 
-- First-class support is limited to universities whose DYS flow has been validated by tests or manual verification
-- Other DYS-based universities are treated as experimental until their login and meeting flows are verified
-- Cookies are kept in memory only; after a container restart, the system performs session recovery by creating a fresh browser context and re-running login when policy allows
+**Bağımlılıklar:** Tek kaynak [`pyproject.toml`](pyproject.toml). [`requirements.txt`](requirements.txt) yalnızca elle `pip install -r` ile uyumluluk içindir; `Run.ps1` / `Run.sh` **artık** önce `requirements.txt` okumaz (eski dosyanın yanlışlıkla `langchain-google-genai` 2.x’e düşürmesi engellendi).
 
-## Core Technical Decisions
+---
 
-- Queue standard: Redis + Celery
-- Orchestration: LangGraph with one thread per `session_id`
-- Browser control split:
-  - Browser-use handles semantic navigation and intent-level browser tasks
-  - Playwright handles deterministic browser primitives such as context lifecycle, permissions, screenshots, tab management, and waiting for page state
-- Persistence model:
-  - `users` hold durable profile and schedule ownership
-  - `sessions` hold runtime conversation and browser lifecycle state
-  - `courses` belong to the user, not the session
+## Otomatik kurulum + çalıştırma (önerilen)
 
-## Quickstart
+### Windows
 
-### Prerequisites
-
-- Docker and Docker Compose
-- For real Telegram usage: a bot token from [@BotFather](https://t.me/BotFather)
-- For real LLM-driven browser flows: at least one supported LLM provider key
-
-### Fastest Start
-
-This repository can be booted even before you configure Telegram or LLM keys.
-
-```bash
-git clone https://github.com/xPoleStarx/ghost-attend
-cd ghost-attend
-docker compose up -d --build
-```
-
-What happens in this mode:
-
-- PostgreSQL and Redis start
-- the app waits for the database
-- migrations are applied automatically
-- the bot container stays alive in standby mode if `TELEGRAM_BOT_TOKEN` is missing
-
-This is the easiest smoke test to confirm the stack boots correctly.
-
-### Real Setup
-
-```bash
-git clone https://github.com/xPoleStarx/ghost-attend
-cd ghost-attend
-cp .env.example .env
-# Fill in TELEGRAM_BOT_TOKEN and one LLM key
-docker compose up -d --build
-```
-
-Then open Telegram, find your bot, and send `/start`.
-
-### One-Command Env Creation
-
-Windows PowerShell:
+PowerShell veya `run.bat`:
 
 ```powershell
-.\scripts\setup.ps1
+cd ghost-attend
+.\Run.ps1
 ```
 
-macOS / Linux:
+Çift tık: **`run.bat`**
+
+Her çalıştırmada (`-SkipInstall` yokken): `pip install` (idempotent) → Playwright → **`app.main` + `app.agent.task_agent`** import doğrulaması → `.env` yoksa kopyalanır → bot.
+
+- Hızlı başlat (kurulum atla): `.\Run.ps1 -SkipInstall` — yalnızca venv ve paketler zaten tamamsa.
+- Tüm paketleri zorla yenile: `.\Run.ps1 -ForceInstall`
+- Sadece kurulum: `.\Run.ps1 -InstallOnly` — sonra `.\Run.ps1 -SkipInstall`
+- Betik çalışmıyorsa: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+- Python bulunamazsa: `$env:GHOST_ATTEND_PYTHON = "C:\...\python.exe"` sonra `.\Run.ps1`
+
+### Linux / macOS
 
 ```bash
-sh ./scripts/setup.sh
+cd ghost-attend
+chmod +x Run.sh
+./Run.sh
 ```
 
-These scripts create `.env` from `.env.example` if it does not exist.
+İsteğe bağlı: `export GHOST_ATTEND_PYTHON=/usr/bin/python3`
 
-## Environment Variables
+Aynı mantık: venv, `requirements.txt`, editable kurulum, Playwright, `.env`, bot.
 
-| Variable | Required | Description |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | yes | Telegram bot token from @BotFather |
-| `LLM_PROVIDER` | yes | `gemini`, `openai`, or `anthropic` |
-| `LLM_MODEL` | yes | Provider-specific model name |
-| `GOOGLE_API_KEY` | if gemini | Google AI Studio API key |
-| `OPENAI_API_KEY` | if openai | OpenAI API key |
-| `ANTHROPIC_API_KEY` | if anthropic | Anthropic API key |
-| `DATABASE_URL` | yes | PostgreSQL connection string |
-| `REDIS_URL` | yes | Redis broker/result backend URL |
-| `SECRET_KEY` | yes | 32-byte hex string used for credential encryption |
-| `BROWSER_HEADLESS` | yes | `true` in production, `false` for local debugging |
-| `PLAYWRIGHT_EXECUTABLE_PATH` | no | Optional explicit Chromium/Chrome executable path |
-| `PAGE_TIMEOUT` | yes | Per-page timeout in milliseconds |
-| `MAX_RETRIES` | yes | Retry count for recoverable tool failures |
-| `WORKER_CONCURRENCY` | yes | Celery worker concurrency |
-| `DEFAULT_TIMEZONE` | no | Fallback timezone, default `Europe/Istanbul` |
+### Docker (sistemde Python yoksa)
 
-See `.env.example` for the current reference values.
-
-### What You Do Not Need To Do Manually
-
-- You do not need to run Alembic manually for the default Docker path
-- You do not need to install Python locally if you are using Docker only
-- You do not need to create PostgreSQL or Redis manually if you use `docker compose`
-
-## Documentation Map
-
-- [AGENTS.md](AGENTS.md): authoritative internal architecture and implementation rules
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): clarified system contracts and operating model
-- [docs/ROADMAP.md](docs/ROADMAP.md): phased delivery plan and milestone exit criteria
-- [CONTRIBUTING.md](CONTRIBUTING.md): development workflow
-- [SECURITY.md](SECURITY.md): security model and vulnerability reporting
-
-## Development
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) kurulu olsun; proje kökünde `.env` dolu olsun.
 
 ```bash
-pip install -e ".[dev]"
-pytest
-ruff check .
-mypy .
+docker compose up --build
 ```
 
-## Current Maturity
+---
 
-This repository is being built in deliberate phases. The current standard is not "ship the MVP as fast as possible" but "establish clean contracts, then implement in slices without compromising future maintainability."
+## Manuel kurulum (IDE / CI / ince ayar)
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the phase plan.
+```bash
+cd ghost-attend
+python3 -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
 
-## Security
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
+# İsterseniz iki aşamalı: pip install -r requirements.txt && pip install -e .
+python -m playwright install chromium
+copy .env.example .env   # veya cp; .env içini doldur
+python -m app.main
+# Alternatif (pyproject script): ghost-attend
+```
 
-Credentials are encrypted before storage, browser sessions are isolated per user, and session cookies are never persisted to disk or the database. See [SECURITY.md](SECURITY.md) for the full policy.
+Geliştirici (test): `python -m pip install -e ".[dev]"`
 
-## License
+Doğrulama: `python -m pip check` · `python -m pytest` (tests varsa)
 
-MIT, see [LICENSE](LICENSE).
+---
+
+## Makefile (Linux / macOS, `make` varsa)
+
+```bash
+make install    # venv + requirements + editable + playwright + .env şablonu
+make run        # bot
+make test       # pytest
+```
+
+---
+
+## Ortam değişkenleri (`.env`)
+
+| Değişken | Zorunlu | Açıklama |
+|----------|---------|----------|
+| `TELEGRAM_BOT_TOKEN` | Evet | BotFather token |
+| `GOOGLE_API_KEY` | Evet | [Google AI Studio](https://aistudio.google.com/app/apikey) Gemini API anahtarı |
+| `GEMINI_MODEL` | Hayır | Varsayılan: `gemini-2.5-flash`. Gemini 3.x kullanıyorsanız `langchain-google-genai>=4.2` gerekir (projede tanımlı); aksi hâlde araç çağrısı sonrası `thought_signature` hatası oluşabilir. |
+| `PLAYWRIGHT_HEADLESS` | Hayır | `false` = tarayıcı penceresi (yerel); Docker’da genelde `true` |
+| `CHECKPOINT_PATH` | Hayır | LangGraph: SQLite dosyası (`AsyncSqliteSaver`), varsayılan `./data/checkpoints.db` |
+| `BROWSER_MAX_STEPS` | Hayır | browser-use üst adım limiti (varsayılan `35`) |
+| `BROWSER_STEP_TIMEOUT` | Hayır | Adım zaman aşımı saniye (varsayılan `180`) |
+
+Şablon: [`.env.example`](.env.example)
+
+---
+
+## Mimari (kısa)
+
+| Bileşen | Konum |
+|--------|--------|
+| Gemini görev ajanı (ReAct, araçlar) | `app/agent/task_agent.py`, `app/agent/tools.py` |
+| Araçlar | `run_browser_automation`, `capture_page_screenshot`, `ask_user` (LangGraph `create_react_agent`) |
+| browser-use (gömülü tarayıcı) | `app/adapters/browser_use_runner.py` |
+| Telegram | `app/telegram/` |
+| Checkpoint | `app/persistence/checkpointer.py` — `CHECKPOINT_PATH` (varsayılan `./data/checkpoints.db`), async SQLite |
+
+Daha ayrıntılı adımlar: [QUICKSTART.md](QUICKSTART.md)
+
+---
+
+## Sorun giderme
+
+| Sorun | Çözüm |
+|-------|--------|
+| `ModuleNotFoundError` / “Paketler eksik” | Proje kökünde: `pip install -e .` (veya `Run.ps1` / `./Run.sh`). Hâlâ olmazsa `.venv` sil → betiği `-ForceInstall` ile yeniden çalıştır |
+| `ghost-attend … requires langchain-google-genai>=4.2` ama ortamda 2.x | Eski kurulum: `pip install -e .` ile projeyi yeniden kurun; gerekirse `.venv` silip betiği baştan çalıştırın |
+| `thought_signature` / Gemini 400 (araç çağrısı sonrası) | `langchain-google-genai` 4.2+ kullanın. `GEMINI_MODEL=gemini-2.5-flash` en az sürtünme ile çalışır |
+| `SqliteSaver does not support async` | Eski anlatım; projede `AsyncSqliteSaver` — bağımlılıkları güncel tutun |
+| `python` / `pip` tanınmıyor | Windows: `Run.ps1` veya `GHOST_ATTEND_PYTHON` ile tam yol |
+| Playwright tarayıcı yok | `python -m playwright install chromium` |
+| Telegram / API hatası | `.env`: `TELEGRAM_BOT_TOKEN` ve `GOOGLE_API_KEY` dolu ve doğru mu |
+
+---
+
+## Güvenlik
+
+`.env` asla commit edilmez ([`.gitignore`](.gitignore)). Token sızdıysa BotFather’dan yeni token alın.

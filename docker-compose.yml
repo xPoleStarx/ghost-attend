@@ -1,73 +1,8 @@
 services:
   bot:
     build: .
-    command: python -m app.main
     env_file:
-      - path: .env.example
-        required: true
-      - path: .env
-        required: false
-    environment:
-      TZ: UTC
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import app.main"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-
-  worker:
-    build: .
-    command: celery -A app.worker.celery_app.celery_app worker --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-4}
-    env_file:
-      - path: .env.example
-        required: true
-      - path: .env
-        required: false
-    environment:
-      TZ: UTC
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import app.worker.celery_app"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ghost_attend
-      POSTGRES_USER: ghost
-      POSTGRES_PASSWORD: ghost
-      TZ: UTC
+      - .env
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ghost -d ghost_attend"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ./data:/app/data
     restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --save "" --appendonly no
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  postgres_data:

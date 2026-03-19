@@ -1,30 +1,15 @@
-FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV TZ=UTC
-
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    fonts-liberation \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libpango-1.0-0 \
-    libasound2 \
-    && rm -rf /var/lib/apt/lists/*
+# Playwright önceden kurulu Python imajı (Chromium uyumluluğu için)
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 
 WORKDIR /app
 
-COPY pyproject.toml README.md alembic.ini ./
-COPY app ./app
-COPY scripts ./scripts
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_HEADLESS=true
 
-RUN pip install --no-cache-dir -e ".[dev]"
+COPY pyproject.toml README.md ./
+COPY app ./app
+
+RUN pip install --no-cache-dir pip setuptools wheel \
+    && pip install --no-cache-dir .
 
 CMD ["python", "-m", "app.main"]
