@@ -83,3 +83,9 @@ $env:GHOST_ATTEND_PYTHON = "$env:LOCALAPPDATA\Programs\Python\Python312\python.e
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
+
+---
+
+## Author & contact
+
+This project is developed by **Seyfullah Korkmaz**. For questions or feedback, email [seyfullahkorkmaz115@gmail.com](mailto:seyfullahkorkmaz115@gmail.com).

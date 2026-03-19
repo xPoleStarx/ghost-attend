@@ -2,6 +2,8 @@
 
 Thanks. Small, focused changes are the easiest to merge.
 
+**Maintainer:** Seyfullah Korkmaz — for project-related questions, contact [seyfullahkorkmaz115@gmail.com](mailto:seyfullahkorkmaz115@gmail.com).
+
 ## Development setup
 
 1. Clone the repo and follow [README.md](README.md) (prefer `Run.ps1` / `Run.sh`).

@@ -154,3 +154,9 @@ More detail: [QUICKSTART.md](QUICKSTART.md)
 ## Security
 
 Never commit `.env` ([`.gitignore`](.gitignore)). If a token leaks, rotate it in BotFather.
+
+---
+
+## Author & contact
+
+**ghost-attend** is developed by **Seyfullah Korkmaz**. For questions about this project, reach out at [seyfullahkorkmaz115@gmail.com](mailto:seyfullahkorkmaz115@gmail.com).
