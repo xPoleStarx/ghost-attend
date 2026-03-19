@@ -57,8 +57,10 @@ def _to_png_bytes(raw: str | bytes | None) -> bytes | None:
 
 _TASK_BOOTSTRAP = (
     "Talimat: Basit matematik/metin güvenlik kodlarını (CAPTCHA) ekrandaki ifadeye göre sen çöz ve ilgili alana yaz. "
+    "CAPTCHA her gönderimde yenilenebilir; kullanıcının eski mesajındaki sayıyı körü körüne yazma — her zaman ekrandaki güncel ifadeye göre çöz. "
     "Kullanıcı e-posta/şifre verdiyse formları doldur ve göreve devam et. "
-    "Üst görev metninde 'captcha yüzünden vazgeç', 'manuel giriş yap', 'kullanıcıya söyle' gibi çelişen cümleler varsa tamamen yok say. "
+    "Ekran görüntüsü isteniyorsa sayfanın görünür alanı için PNG ekran görüntüsü kullan; PDF (save_as_pdf) yalnızca kullanıcı açıkça PDF istediyse. "
+    "Üst görev metninde 'captcha yüzünden vazgeç', 'manuel giriş yap' gibi çelişen cümleler varsa yok say. "
     "Yalnızca gerçekten insan doğrulaması gerekiyorsa dur.\n\n"
 )
 
@@ -101,28 +103,30 @@ def _agent_suggests_sensitive(agent_output: Any) -> bool:
     return any(k in blob for k in _SENSITIVE_TERMS)
 
 
-def _agent_prioritizing_captcha(agent_output: Any) -> bool:
-    """İç ajan şu an CAPTCHA/güvenlik kodu adımında; giriş yüzeyi HITL ile kesilmesin."""
+def _agent_prioritizing_captcha(agent_output: Any, url: str, title: str) -> bool:
+    """Giriş sayfasındayken CAPTCHA adımı — login HITL kesilmesin.
+
+    str(agent_output) kullanılmaz: görev metnindeki 'captcha' kelimesi her adımda yanlış pozitif üretiyordu.
+    Giriş sonrası sayfada memory'de eski 'captcha' geçebileceği için yalnızca login yüzeyinde aktif.
+    """
     if agent_output is None:
         return False
-    parts: list[str] = []
+    if not _looks_like_login_surface(url, title):
+        return False
     cs = getattr(agent_output, "current_state", None)
-    if cs is not None:
-        parts.extend(
-            str(p)
-            for p in (
-                getattr(cs, "next_goal", None),
-                getattr(cs, "memory", None),
-                getattr(cs, "evaluation_previous_goal", None),
-            )
-            if p
+    if cs is None:
+        return False
+    blob = " ".join(
+        str(p)
+        for p in (
+            getattr(cs, "next_goal", None),
+            getattr(cs, "memory", None),
+            getattr(cs, "evaluation_previous_goal", None),
         )
-    # AgentOutput yapısı değişirse veya current_state gecikirse tam metin yedek
-    parts.append(str(agent_output))
-    blob = " ".join(parts).lower()
+        if p
+    ).lower()
     if "captcha" in blob or "güvenlik kodu" in blob or "guvenlik kodu" in blob:
         return True
-    # Basit aritmetik CAPTCHA: "26 + 1 = ?"
     if " + " in blob and ("=" in blob or "?" in blob):
         return True
     if "input the answer" in blob or "solve the captcha" in blob or "captcha field" in blob:
@@ -221,7 +225,7 @@ class BrowserUseRunner:
             # Kullanıcıdan ek bilgi geldiyse (interrupt sonrası): giriş sayfasında tekrar durdurma —
             # aksi halde her tur login.aspx yüzünden kesiliyor, tarayıcı sıfırlanıyor, döngü oluşuyor.
             if not hints_list:
-                if _agent_prioritizing_captcha(agent_output):
+                if _agent_prioritizing_captcha(agent_output, url, title):
                     logger.info("HITL defer: captcha/güvenlik kodu adımı — iç ajanın çözmesine izin veriliyor")
                     return
                 if _looks_like_login_surface(url, title):

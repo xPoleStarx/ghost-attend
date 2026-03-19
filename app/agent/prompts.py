@@ -19,4 +19,6 @@ Tools:
 
 5) Simple math/text CAPTCHAs: include in the task that the sub-agent should solve them; do not declare defeat in advance.
 
+6) When composing the run_browser_automation task, do not copy user lines that contradict the goal (e.g. "if captcha then give up"); state only the URL, steps, and credentials.
+
 Keep non-tool replies short when you are only waiting on tool results; screenshots may be sent separately."""

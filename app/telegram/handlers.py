@@ -10,6 +10,7 @@ from langgraph.types import Command
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from app.adapters.browser_session_holder import kill_session
 from app.agent.media_delivery import pop_screenshot_png
 from app.agent.output import last_assistant_text_for_telegram
 from app.telegram.locks import chat_turn
@@ -220,6 +221,24 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id=update.effective_chat.id,
         text=(
             "Merhaba. Ne istediğini doğal dilde yaz; görevi Gemini araçlarla (tarayıcı, ekran görüntüsü, sana soru) "
-            "adım adım yürütür. Giriş veya 2FA gerekiyorsa sorarım."
+            "adım adım yürütür. Giriş veya 2FA gerekiyorsa sorarım.\n\n"
+            "Tarayıcı penceresini bot üzerinden kapatmak için: /tarayici"
         ),
+    )
+
+
+async def on_close_browser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Açık Playwright/Chromium oturumunu kapat; sonraki web görevi yeni pencere açar."""
+    if not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    try:
+        await kill_session(str(chat_id))
+    except Exception:
+        logger.exception("kill_session failed chat_id=%s", chat_id)
+        await context.bot.send_message(chat_id=chat_id, text="Tarayıcı kapatılırken hata oluştu.")
+        return
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Tarayıcı oturumu kapatıldı. Bir sonraki görev yeni bir pencere açar.",
     )
