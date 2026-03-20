@@ -18,7 +18,7 @@ try:
 except ModuleNotFoundError as e:
     missing = getattr(e, "name", None) or str(e)
     print(
-        f"\n[ghost-attend] Eksik Python modulu: {missing}\n"
+        f"\n[GhostMyShit] Eksik Python modulu: {missing}\n"
         "  (Bu mesaj bazen 'pydantic' sanilir; asil eksik modul yukaridaki isimdir.)\n"
         "  Cozum: proje kokunde  .\\Run.ps1   veya   ./Run.sh\n"
         "  Hala olmazsa .venv klasorunu silip tekrar Run.ps1 calistirin.\n"

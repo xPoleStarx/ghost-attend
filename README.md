@@ -1,4 +1,4 @@
-# ghost-attend
+# GhostMyShit
 
 A **Telegram** bot that runs web tasks with **LangGraph** + **browser-use** (Playwright) + **Google Gemini**. It pauses on login / sensitive steps, sends screenshots and questions, and continues with your reply (HITL).
 
@@ -26,7 +26,7 @@ A **Telegram** bot that runs web tasks with **LangGraph** + **browser-use** (Pla
 PowerShell or `run.bat`:
 
 ```powershell
-cd ghost-attend
+cd GhostMyShit
 .\Run.ps1
 ```
 
@@ -38,17 +38,17 @@ Each run (without `-SkipInstall`): idempotent `pip install` → Playwright → i
 - Force reinstall all packages: `.\Run.ps1 -ForceInstall`
 - Install only: `.\Run.ps1 -InstallOnly` — then `.\Run.ps1 -SkipInstall`
 - Script blocked: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
-- Python not found: `$env:GHOST_ATTEND_PYTHON = "C:\...\python.exe"` then `.\Run.ps1`
+- Python not found: `$env:GHOST_MYSHIT_PYTHON = "C:\...\python.exe"` then `.\Run.ps1`
 
 ### Linux / macOS
 
 ```bash
-cd ghost-attend
+cd GhostMyShit
 chmod +x Run.sh
 ./Run.sh
 ```
 
-Optional: `export GHOST_ATTEND_PYTHON=/usr/bin/python3`
+Optional: `export GHOST_MYSHIT_PYTHON=/usr/bin/python3`
 
 Same flow: venv, `pip install -e .`, Playwright, `.env`, bot.
 
@@ -65,7 +65,7 @@ docker compose up --build
 ## Manual setup (IDE / CI / fine-tuning)
 
 ```bash
-cd ghost-attend
+cd GhostMyShit
 python3 -m venv .venv
 # Windows: .venv\Scripts\activate
 # Linux/macOS: source .venv/bin/activate
@@ -76,7 +76,7 @@ python -m pip install -e .
 python -m playwright install chromium
 copy .env.example .env   # or cp; edit .env
 python -m app.main
-# Alternative (pyproject script): ghost-attend
+# Alternative (pyproject script): GhostMyShit
 ```
 
 Dev (tests): `python -m pip install -e ".[dev]"`
@@ -142,10 +142,10 @@ More detail: [QUICKSTART.md](QUICKSTART.md)
 | Issue | Fix |
 |-------|-----|
 | `ModuleNotFoundError` / “missing packages” | From project root: `pip install -e .` (or `Run.ps1` / `./Run.sh`). If it persists, delete `.venv` and rerun with `-ForceInstall` |
-| `ghost-attend … requires langchain-google-genai>=4.2` but env has 2.x | Old install: reinstall with `pip install -e .`; if needed, remove `.venv` and run the script from scratch |
+| `GhostMyShit … requires langchain-google-genai>=4.2` but env has 2.x | Old install: reinstall with `pip install -e .`; if needed, remove `.venv` and run the script from scratch |
 | `thought_signature` / Gemini 400 (after tool calls) | Use `langchain-google-genai` 4.2+. `GEMINI_MODEL=gemini-2.5-flash` is the smoothest path |
 | `SqliteSaver does not support async` | Outdated docs; this project uses `AsyncSqliteSaver` — keep dependencies current |
-| `python` / `pip` not found | Windows: `Run.ps1` or set `GHOST_ATTEND_PYTHON` to full path |
+| `python` / `pip` not found | Windows: `Run.ps1` or set `GHOST_MYSHIT_PYTHON` to full path |
 | No Playwright browser | `python -m playwright install chromium` |
 | Telegram / API errors | Check `.env`: `TELEGRAM_BOT_TOKEN` and `GOOGLE_API_KEY` are set and correct |
 
@@ -159,4 +159,4 @@ Never commit `.env` ([`.gitignore`](.gitignore)). If a token leaks, rotate it in
 
 ## Author & contact
 
-**ghost-attend** is developed by **Seyfullah Korkmaz**. For questions about this project, reach out at [seyfullahkorkmaz115@gmail.com](mailto:seyfullahkorkmaz115@gmail.com).
+**GhostMyShit** is developed by **Seyfullah Korkmaz**. For questions about this project, reach out at [seyfullahkorkmaz115@gmail.com](mailto:seyfullahkorkmaz115@gmail.com).

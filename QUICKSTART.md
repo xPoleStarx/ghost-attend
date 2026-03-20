@@ -9,7 +9,7 @@
 
 ```bash
 git clone <this-repo-git-url>
-cd ghost-attend
+cd GhostMyShit
 ```
 
 ## 2. Environment file
@@ -74,7 +74,7 @@ Dev dependencies: `pip install -e ".[dev]"`
 ## Python not found (Windows)
 
 ```powershell
-$env:GHOST_ATTEND_PYTHON = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
+$env:GHOST_MYSHIT_PYTHON = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
 .\Run.ps1
 ```
 

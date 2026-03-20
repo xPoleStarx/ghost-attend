@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  ghost-attend: finds Python, creates .venv, installs deps, runs the Telegram bot.
-  Optional: set GHOST_ATTEND_PYTHON to full path of python.exe
+  GhostMyShit: finds Python, creates .venv, installs deps, runs the Telegram bot.
+  Optional: set GHOST_MYSHIT_PYTHON to full path of python.exe (old: GHOST_ATTEND_PYTHON also supported)
 #>
 param(
     [switch]$InstallOnly,
@@ -44,7 +44,13 @@ function Test-ImportsOrExit {
 }
 
 function Find-SystemPython {
-    if ($env:GHOST_ATTEND_PYTHON) {
+    if ($env:GHOST_MYSHIT_PYTHON) {
+        $p = $env:GHOST_MYSHIT_PYTHON.Trim()
+        if (Test-Path $p) { return (Resolve-Path $p).Path }
+        Write-Err "GHOST_MYSHIT_PYTHON is set but file not found: $p"
+    }
+    elseif ($env:GHOST_ATTEND_PYTHON) {
+        # Backward-compatibility: keep old env var working.
         $p = $env:GHOST_ATTEND_PYTHON.Trim()
         if (Test-Path $p) { return (Resolve-Path $p).Path }
         Write-Err "GHOST_ATTEND_PYTHON is set but file not found: $p"
@@ -107,7 +113,7 @@ if (-not (Test-Path $venvPy)) {
         Write-Host ""
         Write-Host "[!] Python not found. Options:" -ForegroundColor Red
         Write-Host "  - Install Python 3.11+ from https://www.python.org/downloads/ and check Add to PATH"
-        Write-Host "  - Or: `$env:GHOST_ATTEND_PYTHON = 'C:\Path\to\python.exe'  then  .\Run.ps1"
+        Write-Host "  - Or: `$env:GHOST_MYSHIT_PYTHON = 'C:\Path\to\python.exe'  then  .\Run.ps1"
         Write-Host "  - Or: docker compose up --build"
         exit 1
     }

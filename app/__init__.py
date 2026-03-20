@@ -1,1 +1,1 @@
-"""Ghost-attend: LangGraph orchestrated browser agent with Telegram."""
+"""GhostMyShit: LangGraph orchestrated browser agent with Telegram."""

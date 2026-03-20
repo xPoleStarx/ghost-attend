@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ghost-attend: venv olusturur, bagimliliklari kurar, Telegram botunu baslatir.
+# GhostMyShit: venv olusturur, bagimliliklari kurar, Telegram botunu baslatir.
 # Kullanim: chmod +x Run.sh && ./Run.sh
-# Ortam: GHOST_ATTEND_PYTHON=/tam/yol/python3 (istege bagli)
+# Ortam: GHOST_MYSHIT_PYTHON=/tam/yol/python3 (istege bagli; old: GHOST_ATTEND_PYTHON da desteklenir)
 
 set -euo pipefail
 
@@ -27,6 +27,10 @@ done
 step() { echo ""; echo "==> $1"; }
 
 find_python() {
+  if [[ -n "${GHOST_MYSHIT_PYTHON:-}" ]] && [[ -x "${GHOST_MYSHIT_PYTHON}" ]]; then
+    echo "${GHOST_MYSHIT_PYTHON}"
+    return 0
+  fi
   if [[ -n "${GHOST_ATTEND_PYTHON:-}" ]] && [[ -x "${GHOST_ATTEND_PYTHON}" ]]; then
     echo "${GHOST_ATTEND_PYTHON}"
     return 0
@@ -56,7 +60,8 @@ if [[ ! -x "$VENV_PY" ]]; then
     cat >&2 << 'EOF'
 [!] Python3 bulunamadi. Yapilacaklar:
   1) Python 3.11+ kurun (ornek: https://www.python.org/downloads/ veya apt/brew)
-  2) veya: export GHOST_ATTEND_PYTHON=/tam/yol/python3
+  2) veya: export GHOST_MYSHIT_PYTHON=/tam/yol/python3
+     (eski: GHOST_ATTEND_PYTHON de calisir)
   3) Docker: docker compose up --build
 EOF
     exit 1
