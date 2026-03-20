@@ -15,6 +15,7 @@ class BrowserRunStatus(StrEnum):
     DONE = "done"
     NEEDS_HUMAN = "needs_human"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 @dataclass

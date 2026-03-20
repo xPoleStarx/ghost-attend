@@ -14,6 +14,13 @@ from app.adapters.browser_session_holder import kill_session
 from app.agent.media_delivery import pop_screenshot_png
 from app.agent.output import last_assistant_text_for_telegram
 from app.telegram.locks import chat_turn
+from app.run_control import (
+    clear_stop,
+    is_browser_run_active_async,
+    register_progress_sender,
+    request_stop,
+    unregister_progress_sender,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,71 +155,103 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     invoke_cfg = {**config, "recursion_limit": _RECURSION_LIMIT}
 
+    async def _send_progress(text: str) -> None:
+        await context.bot.send_message(chat_id=chat_id, text=text[:4096])
+
+    register_progress_sender(str(chat_id), _send_progress)
     async with chat_turn(chat_id):
         try:
-            awaiting = bool(context.chat_data.get("awaiting_resume"))
-            chk_msgs = await _checkpoint_messages(graph, config)
-            open_tools = _has_open_tool_calls(chk_msgs)
-            pending_intr = await _pending_interrupt(graph, config)
-            # interrupt() araç ortasında kesildiğinde ToolMessage oluşmaz; yeni HumanMessage geçmişi bozar.
-            if open_tools or awaiting or pending_intr:
-                result = await graph.ainvoke(Command(resume=text), invoke_cfg)
-            else:
-                result = await graph.ainvoke(
-                    {"messages": [HumanMessage(content=text)]},
-                    invoke_cfg,
-                )
-        except ValueError as e:
-            err = str(e)
-            if "ToolMessage" in err or "tool_calls" in err or "INVALID_CHAT_HISTORY" in err:
-                logger.warning("Geçersiz sohbet geçmişi (checkpoint); thread siliniyor: chat_id=%s", chat_id)
-                try:
-                    # messages=[] yazmak yetmez; add_messages checkpoint ile birleşince yetim AIMessage kalabiliyor.
-                    await _delete_thread_checkpoint(graph, str(chat_id))
+            try:
+                awaiting = bool(context.chat_data.get("awaiting_resume"))
+                chk_msgs = await _checkpoint_messages(graph, config)
+                open_tools = _has_open_tool_calls(chk_msgs)
+                pending_intr = await _pending_interrupt(graph, config)
+                # interrupt() araç ortasında kesildiğinde ToolMessage oluşmaz; yeni HumanMessage geçmişi bozar.
+                if open_tools or awaiting or pending_intr:
+                    result = await graph.ainvoke(Command(resume=text), invoke_cfg)
+                else:
                     result = await graph.ainvoke(
                         {"messages": [HumanMessage(content=text)]},
                         invoke_cfg,
                     )
-                except Exception:
-                    logger.exception("graph.ainvoke retry failed for chat_id=%s", chat_id)
+            except ValueError as e:
+                err = str(e)
+                if "ToolMessage" in err or "tool_calls" in err or "INVALID_CHAT_HISTORY" in err:
+                    logger.warning("Geçersiz sohbet geçmişi (checkpoint); thread siliniyor: chat_id=%s", chat_id)
+                    try:
+                        # messages=[] yazmak yetmez; add_messages checkpoint ile birleşince yetim AIMessage kalabiliyor.
+                        await _delete_thread_checkpoint(graph, str(chat_id))
+                        result = await graph.ainvoke(
+                            {"messages": [HumanMessage(content=text)]},
+                            invoke_cfg,
+                        )
+                    except Exception:
+                        logger.exception("graph.ainvoke retry failed for chat_id=%s", chat_id)
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text="İşlem sırasında bir hata oluştu. Biraz sonra tekrar dene.",
+                        )
+                        return
+                else:
+                    logger.exception("graph.ainvoke failed for chat_id=%s", chat_id)
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text="İşlem sırasında bir hata oluştu. Biraz sonra tekrar dene.",
                     )
                     return
-            else:
+            except Exception:
                 logger.exception("graph.ainvoke failed for chat_id=%s", chat_id)
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text="İşlem sırasında bir hata oluştu. Biraz sonra tekrar dene.",
                 )
                 return
-        except Exception:
-            logger.exception("graph.ainvoke failed for chat_id=%s", chat_id)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="İşlem sırasında bir hata oluştu. Biraz sonra tekrar dene.",
-            )
-            return
 
-        messages = result.get("messages") or []
-        intrs = _unwrap_interrupts(result)
-        reply_text = last_assistant_text_for_telegram(messages) or ""
-        if not reply_text.strip() and not intrs:
-            reply_text = "Tamam."
-        elif intrs and not reply_text.strip():
-            reply_text = ""
-        png = pop_screenshot_png(str(chat_id))
-        merged: dict[str, Any] = {
-            **result,
-            "reply_text": reply_text,
-            "screenshot_png": png,
-        }
+            messages = result.get("messages") or []
+            intrs = _unwrap_interrupts(result)
+            reply_text = last_assistant_text_for_telegram(messages) or ""
+            if not reply_text.strip() and not intrs:
+                reply_text = "Tamam."
+            elif intrs and not reply_text.strip():
+                reply_text = ""
+            png = pop_screenshot_png(str(chat_id))
+            merged: dict[str, Any] = {
+                **result,
+                "reply_text": reply_text,
+                "screenshot_png": png,
+            }
 
-        pending_snap = await _pending_interrupt(graph, config)
-        context.chat_data["awaiting_resume"] = bool(intrs) or pending_snap
-        await _send_interrupt_payloads(update, context, merged)
-        await _send_regular_outputs(update, context, merged)
+            pending_snap = await _pending_interrupt(graph, config)
+            context.chat_data["awaiting_resume"] = bool(intrs) or pending_snap
+            await _send_interrupt_payloads(update, context, merged)
+            await _send_regular_outputs(update, context, merged)
+        finally:
+            unregister_progress_sender(str(chat_id))
+
+
+async def on_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tarayıcı otomasyonu sırasında /stop — chat_turn kullanılmaz (kilitlenme olmasın)."""
+    if not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    tid = str(chat_id)
+    if not await is_browser_run_active_async(tid):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Şu anda çalışan bir tarayıcı görevi yok. /stop, site üzerinde adım adım ilerleyen "
+                "otomasyon sırasında en güvenilir şekilde çalışır; model yalnızca düşünüyorsa duraklama gecikebilir."
+            ),
+        )
+        return
+    request_stop(tid)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Durdurma istendi. Model yanıtı veya tek bir tarayıcı aksiyonu sürüyorsa birkaç saniye "
+            "sürebilir; adımlar arasında kesilir. Görev güvenli şekilde sonlandırılacak."
+        ),
+    )
 
 
 async def on_reset_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -224,6 +263,7 @@ async def on_reset_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     async with chat_turn(chat_id):
         try:
+            clear_stop(str(chat_id))
             await _delete_thread_checkpoint(graph, str(chat_id))
         except Exception:
             logger.exception("reset: checkpoint silinemedi chat_id=%s", chat_id)
@@ -254,7 +294,9 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "and work through multi-step jobs end-to-end. If something needs a password or 2FA, I'll ask you here.\n\n"
             "⚠️ *Heads-up:* don't manually kill the automation browser window or tab — it can confuse the session. "
             "To close it cleanly, use `/tarayici`.\n\n"
-            "🧹 Fresh start (wipes this chat's memory *and* the browser session): `/temizle` or `/reset`"
+            "🧹 Fresh start (wipes this chat's memory *and* the browser session): `/temizle` or `/reset`\n\n"
+            "⏹ *Stop a running browser job:* `/stop` or `/dur` — works best while the site automation is stepping; "
+            "if the model is only thinking, it may stop slightly later."
         ),
         parse_mode="Markdown",
     )

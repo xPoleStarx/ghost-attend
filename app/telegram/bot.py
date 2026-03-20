@@ -6,7 +6,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from app.config.settings import Settings
 from app.graph.builder import build_compiled_graph
 from app.persistence.checkpointer import create_checkpointer
-from app.telegram.handlers import on_close_browser, on_reset_context, on_start, on_text_message
+from app.telegram.handlers import (
+    on_close_browser,
+    on_reset_context,
+    on_start,
+    on_stop,
+    on_text_message,
+)
 
 
 async def _post_init(application: Application) -> None:
@@ -23,6 +29,8 @@ def run_bot(settings: Settings) -> None:
         Application.builder()
         .token(settings.telegram_bot_token)
         .post_init(_post_init)
+        # Varsayılan tek güncelleme: uzun süren graph.ainvoke sırasında /stop kuyrukta kalır ve hiç işlenmez.
+        .concurrent_updates(True)
         .build()
     )
     application.bot_data["settings"] = settings
@@ -31,6 +39,8 @@ def run_bot(settings: Settings) -> None:
     application.add_handler(CommandHandler("temizle", on_reset_context))
     application.add_handler(CommandHandler("reset", on_reset_context))
     application.add_handler(CommandHandler("tarayici", on_close_browser))
+    application.add_handler(CommandHandler("stop", on_stop))
+    application.add_handler(CommandHandler("dur", on_stop))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)

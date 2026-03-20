@@ -1,6 +1,9 @@
 """HITL sonrası devam bağlamı: otomatik blok ve görev birleştirme."""
 
+from types import SimpleNamespace
+
 from app.adapters.browser_use_runner import (
+    _login_dom_looks_unready,
     _merge_task,
     _task_has_inline_credentials,
     _task_suppresses_login_surface_hitl,
@@ -75,6 +78,17 @@ def test_inline_credentials_detected():
     )
     assert _task_has_inline_credentials(t)
     assert not _task_has_inline_credentials("Open dys.mu.edu.tr and tell me the page title")
+
+
+def test_login_dom_unready_empty_selector_map():
+    st = SimpleNamespace(dom_state=SimpleNamespace(selector_map={}))
+    assert _login_dom_looks_unready(st)
+
+
+def test_login_dom_ready_enough_interactive_nodes():
+    sm = {i: object() for i in range(8)}
+    st = SimpleNamespace(dom_state=SimpleNamespace(selector_map=sm))
+    assert not _login_dom_looks_unready(st)
 
 
 def test_inline_credentials_email_slash_password():

@@ -140,6 +140,10 @@ def build_task_tools(settings: "Settings"):
                 if result.raw_error:
                     msg = f"{msg}\nTechnical: {result.raw_error}"
                 return msg
+            if result.status == BrowserRunStatus.CANCELLED:
+                return (
+                    f"[User stopped the browser task] {result.summary or 'Stopped.'}"
+                )
             if result.screenshot_png:
                 stash_screenshot_png(tid, result.screenshot_png)
             summary = (result.summary or "Task finished.").strip()

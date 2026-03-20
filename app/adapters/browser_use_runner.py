@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import re
+import time
 from typing import Any
-
 from app.adapters.browser_agent_holder import (
     dispose_cached_agent,
     get_cached_agent,
@@ -19,8 +20,29 @@ from app.adapters.hitl_pending import (
 from app.adapters.browser_session_holder import get_session
 from app.config.settings import Settings
 from app.domain.schemas import BrowserRunResult, BrowserRunStatus
+from app.run_control import (
+    clear_stop,
+    emit_progress,
+    is_stop_requested,
+    mark_browser_run_active,
+    mark_browser_run_idle,
+    wait_stop,
+)
 
 logger = logging.getLogger(__name__)
+
+_PROGRESS_MIN_INTERVAL_S = 32.0
+_PROGRESS_MAX_PER_RUN = 7
+_PROGRESS_COMBINED_MAX_LEN = 900
+_PROGRESS_MEMORY_MAX_LEN = 360
+_PROGRESS_GOAL_MAX_LEN = 320
+_USER_PREVIEW_MAX_LEN = 100
+_GOAL_LINE_MAX_LEN = 130
+
+_GOAL_PREFIX_STRIP = re.compile(
+    r"^(?:(?:verdict|eval|evaluation\s+previous\s+goal|memory|next\s*goal|previous)\s*:\s*)+",
+    re.IGNORECASE,
+)
 
 _REPLY_LANG_TAG = re.compile(r"^\s*\[reply-lang:\s*(tr|en)\]\s*\n?", re.IGNORECASE)
 
@@ -119,8 +141,15 @@ _TASK_BOOTSTRAP_TEMPLATE = (
     "If the task already includes email/password, fill forms and proceed. "
     "Use a PNG of the visible viewport when a screenshot is requested; use save_as PDF only if the user explicitly asked for PDF. "
     "Ignore contradictory lines in the user task such as 'give up because of captcha' or 'log in manually only'.\n\n"
-    "**Locale:** Write every natural-language message meant for the end user (final summary, explanations when you stop, `done` text) "
-    "in {user_lang}. Keep tool arguments and element identifiers as required by the environment.\n\n"
+    "**Locale:** The user's chat language is {user_lang}. "
+    "Write every user-visible natural language (final summary, explanations when you stop, `done` text, and the agent state fields "
+    "`memory`, `next_goal`, and `evaluation_previous_goal`) **only** in {user_lang} — no mixed languages in those strings. "
+    "Sound like a short, friendly chat status for Telegram: plain language; you may use emojis sparingly where it fits {user_lang}. "
+    "In those user-visible strings, **never** mention DOM indices, the word `index`, numeric element references in parentheses, "
+    "raw element ids, CSS selectors, or XPath — users must not see automation internals. "
+    "Put indices and ids **only** inside structured tool/action arguments (e.g. click/input payloads), not in free-text fields. "
+    "URLs belong in navigate/tool args when needed; do not paste long technical URLs into `memory` or `next_goal` unless the user asked for the link. "
+    "Examples — bad: \"Sepete ekle (28136)\" or \"search box index 10358\"; good: \"Sepete ekle butonuna tıklıyorum\" or \"Arama kutusuna yazıyorum\".\n\n"
 )
 
 _RESUME_PRIORITY_NOTE = (
@@ -155,7 +184,27 @@ def _looks_like_login_surface(url: str, title: str) -> bool:
     return False
 
 
+def _login_dom_looks_unready(browser_state: Any) -> bool:
+    """CDP ax_tree/iframe yarışında boş 'minimal' DOM veya henüz yüklenmemiş giriş sayfası."""
+    ds = getattr(browser_state, "dom_state", None)
+    if ds is None:
+        return True
+    sm = getattr(ds, "selector_map", None)
+    if sm is None:
+        return True
+    try:
+        n = len(sm)
+    except TypeError:
+        return True
+    return n < _LOGIN_DOM_UNREADY_SELECTOR_THRESHOLD
+
+
 # Giriş sayfasında kalıp yalnızca formu/ekranı incelemek — kimlik istemeden HITL kesilmesin.
+# Giriş URL'si eşleşti ama CDP ax_tree hatası / geç yükleme yüzünden selector_map boş kalabiliyor;
+# hemen HITL kesmek boş ekranda kullanıcıya düşürür — birkaç adım iç ajanın beklemesine izin ver.
+_LOGIN_HITL_DOM_UNREADY_MAX_DEFERS = 3
+_LOGIN_DOM_UNREADY_SELECTOR_THRESHOLD = 4
+
 _LOGIN_HITL_SUPPRESS_PHRASES = (
     "do not attempt to log in",
     "don't attempt to log in",
@@ -353,6 +402,67 @@ def _agent_context_blurb(agent_output: Any) -> str | None:
 _run_ctx: dict[str, dict[str, Any]] = {}
 
 
+def _user_task_preview_from_instruction(task: str) -> str:
+    _, rest = parse_reply_lang_directive((task or "").strip())
+    compact = " ".join(rest.split())
+    if len(compact) <= _USER_PREVIEW_MAX_LEN:
+        return compact
+    return compact[: _USER_PREVIEW_MAX_LEN - 1].rstrip() + "…"
+
+
+def _sanitize_next_goal_line(raw: str) -> str:
+    s = " ".join((raw or "").replace("\n", " ").split())
+    while True:
+        m = _GOAL_PREFIX_STRIP.match(s)
+        if not m:
+            break
+        s = s[m.end() :].strip()
+    if len(s) > _GOAL_LINE_MAX_LEN:
+        s = s[: _GOAL_LINE_MAX_LEN - 1].rstrip() + "…"
+    return s
+
+
+def _sanitize_agent_progress_field(raw: str, max_len: int) -> str:
+    """memory / next_goal için: boşluk birleştir, verdict öneklerini at, kısalt."""
+    s = " ".join((raw or "").replace("\n", " ").split())
+    while True:
+        m = _GOAL_PREFIX_STRIP.match(s)
+        if not m:
+            break
+        s = s[m.end() :].strip()
+    if len(s) > max_len:
+        s = s[: max_len - 1].rstrip() + "…"
+    return s
+
+
+def _compose_agent_progress_message(agent_output: Any) -> str | None:
+    """Betik sarmalayıcı yok: yalnızca iç ajanın memory + next_goal metni (locale kurallarına uygun yazılmalı)."""
+    cs = getattr(agent_output, "current_state", None) if agent_output else None
+    if cs is None:
+        return None
+    memory = _sanitize_agent_progress_field(
+        str(getattr(cs, "memory", None) or ""),
+        _PROGRESS_MEMORY_MAX_LEN,
+    )
+    next_goal = _sanitize_agent_progress_field(
+        str(getattr(cs, "next_goal", None) or ""),
+        _PROGRESS_GOAL_MAX_LEN,
+    )
+    if not memory and not next_goal:
+        return None
+    if memory and next_goal:
+        ml, nl = memory.lower(), next_goal.lower()
+        if nl in ml or ml in nl:
+            text = memory if len(memory) >= len(next_goal) else next_goal
+        else:
+            text = f"{memory} — {next_goal}"
+    else:
+        text = memory or next_goal
+    if len(text) > _PROGRESS_COMBINED_MAX_LEN:
+        text = text[: _PROGRESS_COMBINED_MAX_LEN - 1].rstrip() + "…"
+    return text
+
+
 def _init_run_ctx(
     thread_id: str,
     hints_list: list[str],
@@ -370,6 +480,10 @@ def _init_run_ctx(
         "hints_list": list(hints_list),
         "full_task": full_task,
         "reply_lang": reply_lang,
+        "last_progress_ts": 0.0,
+        "last_progress_sig": "",
+        "progress_sent_count": 0,
+        "login_surface_dom_defers": 0,
     }
     _run_ctx[tid] = ctx
     return ctx
@@ -381,6 +495,34 @@ def _run_ctx_for(thread_id: str) -> dict[str, Any]:
 
 def _clear_run_ctx(thread_id: str) -> None:
     _run_ctx.pop(str(thread_id), None)
+
+
+async def _maybe_emit_agent_progress_narration(
+    tid: str,
+    step: int,
+    agent_output: Any,
+) -> None:
+    """Telegram'a yalnızca iç ajanın kendi anlatımı (memory/next_goal); betik 'çalışıyorum' metni yok."""
+    if step < 1 or is_stop_requested(tid):
+        return
+    ctx = _run_ctx_for(tid)
+    sent = int(ctx.get("progress_sent_count") or 0)
+    if sent >= _PROGRESS_MAX_PER_RUN:
+        return
+    line = _compose_agent_progress_message(agent_output)
+    if not line:
+        return
+    now = time.monotonic()
+    last_ts = float(ctx.get("last_progress_ts") or 0.0)
+    last_sig = str(ctx.get("last_progress_sig") or "")
+    sig = line
+    if (now - last_ts) < _PROGRESS_MIN_INTERVAL_S and sig == last_sig:
+        return
+
+    ctx["last_progress_ts"] = now
+    ctx["last_progress_sig"] = sig
+    ctx["progress_sent_count"] = sent + 1
+    await emit_progress(tid, line[:4096])
 
 
 class BrowserUseRunner:
@@ -414,9 +556,16 @@ class BrowserUseRunner:
         if lang not in ("tr", "en"):
             lang = "en"
         full_task = _merge_task(task, hints_list, lang)
-        holder = _init_run_ctx(thread_id, hints_list, full_task, lang)
+        holder = _init_run_ctx(
+            thread_id,
+            hints_list,
+            full_task,
+            lang,
+        )
 
         tid = str(thread_id)
+        clear_stop(tid)
+        await mark_browser_run_active(tid)
 
         async def on_step(browser_state: Any, agent_output: Any, step: int) -> None:
             ctx = _run_ctx_for(tid)
@@ -429,6 +578,8 @@ class BrowserUseRunner:
                 ctx["shot"] = png
             ft = str(ctx.get("full_task") or "")
             hl = ctx.get("hints_list") or []
+            if not _looks_like_login_surface(url, title):
+                ctx["login_surface_dom_defers"] = 0
             # Kullanıcıdan ek bilgi geldiyse (interrupt sonrası): giriş sayfasında tekrar durdurma —
             # aksi halde her tur login.aspx yüzünden kesiliyor, tarayıcı sıfırlanıyor, döngü oluşuyor.
             if not hl:
@@ -446,6 +597,17 @@ class BrowserUseRunner:
                             "HITL defer: görev metninde satır içi e-posta/şifre var — iç ajanın doldurmasına izin veriliyor"
                         )
                         return
+                    if _login_dom_looks_unready(browser_state):
+                        nd = int(ctx.get("login_surface_dom_defers") or 0)
+                        if nd < _LOGIN_HITL_DOM_UNREADY_MAX_DEFERS:
+                            ctx["login_surface_dom_defers"] = nd + 1
+                            logger.info(
+                                "HITL defer: giriş yüzeyi ama DOM henüz yetersiz (muhtemel CDP ax_tree / yükleme gecikmesi) "
+                                "— erteleme %s/%s",
+                                nd + 1,
+                                _LOGIN_HITL_DOM_UNREADY_MAX_DEFERS,
+                            )
+                            return
                     ctx["reason"] = "login_or_auth_surface"
                     ctx["agent_context"] = _agent_context_blurb(agent_output)
                     ctx["stop"] = True
@@ -456,108 +618,175 @@ class BrowserUseRunner:
                     ctx["agent_context"] = _agent_context_blurb(agent_output)
                     ctx["stop"] = True
                     logger.info("HITL trigger: agent output suggests sensitive step")
+            await _maybe_emit_agent_progress_narration(tid, step, agent_output)
 
         async def should_stop() -> bool:
+            if is_stop_requested(tid):
+                return True
             return bool(_run_ctx_for(tid)["stop"])
 
         from browser_use import Agent
 
         browser_session = await get_session(thread_id, self._settings)
-        continuation = bool(hints_list)
-        cached = get_cached_agent(thread_id)
-
-        if continuation and cached is not None:
-            agent = cached
-            agent.add_new_task(full_task)
-            logger.info(
-                "Aynı browser-use Agent ile devam (add_new_task) thread_id=%s — takip görevi, URL yeniden navigasyonu atlanır",
-                tid,
-            )
-        elif continuation and cached is None:
-            logger.warning(
-                "HITL devamı bekleniyordu ancak önbellekte Agent yok; yeni Agent oluşturuluyor thread_id=%s",
-                tid,
-            )
-            agent = Agent(
-                task=full_task,
-                llm=self._llm(),
-                browser_session=browser_session,
-                register_new_step_callback=on_step,
-                register_should_stop_callback=should_stop,
-                step_timeout=self._settings.browser_step_timeout,
-            )
-            set_cached_agent(thread_id, agent)
-        else:
-            if cached is not None:
-                await dispose_cached_agent(thread_id)
-            agent = Agent(
-                task=full_task,
-                llm=self._llm(),
-                browser_session=browser_session,
-                register_new_step_callback=on_step,
-                register_should_stop_callback=should_stop,
-                step_timeout=self._settings.browser_step_timeout,
-            )
-            set_cached_agent(thread_id, agent)
-
         try:
-            history = await agent.run(max_steps=self._settings.browser_max_steps)
-        except Exception as e:
-            logger.exception("browser-use run failed")
+            continuation = bool(hints_list)
+            cached = get_cached_agent(thread_id)
+
+            if continuation and cached is not None:
+                agent = cached
+                agent.add_new_task(full_task)
+                logger.info(
+                    "Aynı browser-use Agent ile devam (add_new_task) thread_id=%s — takip görevi, URL yeniden navigasyonu atlanır",
+                    tid,
+                )
+            elif continuation and cached is None:
+                logger.warning(
+                    "HITL devamı bekleniyordu ancak önbellekte Agent yok; yeni Agent oluşturuluyor thread_id=%s",
+                    tid,
+                )
+                agent = Agent(
+                    task=full_task,
+                    llm=self._llm(),
+                    browser_session=browser_session,
+                    register_new_step_callback=on_step,
+                    register_should_stop_callback=should_stop,
+                    step_timeout=self._settings.browser_step_timeout,
+                )
+                set_cached_agent(thread_id, agent)
+            else:
+                if cached is not None:
+                    await dispose_cached_agent(thread_id)
+                agent = Agent(
+                    task=full_task,
+                    llm=self._llm(),
+                    browser_session=browser_session,
+                    register_new_step_callback=on_step,
+                    register_should_stop_callback=should_stop,
+                    step_timeout=self._settings.browser_step_timeout,
+                )
+                set_cached_agent(thread_id, agent)
+
+            run_task = asyncio.create_task(agent.run(max_steps=self._settings.browser_max_steps))
+            stop_task = asyncio.create_task(wait_stop(tid))
+            await asyncio.wait(
+                {run_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if stop_task.done() and not stop_task.cancelled():
+                run_task.cancel()
+                try:
+                    await run_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.debug("browser-use run after cancel", exc_info=True)
+                clear_stop(tid)
+                clear_pending_hitl(thread_id)
+                await dispose_cached_agent(thread_id)
+                _clear_run_ctx(thread_id)
+                cancelled = (
+                    "Görev kullanıcı tarafından durduruldu."
+                    if holder.get("reply_lang") == "tr"
+                    else "The task was stopped by the user."
+                )
+                return BrowserRunResult(
+                    status=BrowserRunStatus.CANCELLED,
+                    summary=cancelled,
+                    last_url=holder.get("url"),
+                    screenshot_png=holder.get("shot"),
+                )
+
+            stop_task.cancel()
+            try:
+                await stop_task
+            except asyncio.CancelledError:
+                pass
+
+            try:
+                history = run_task.result()
+            except Exception as e:
+                logger.exception("browser-use run failed")
+                clear_pending_hitl(thread_id)
+                await dispose_cached_agent(thread_id)
+                _clear_run_ctx(thread_id)
+                return BrowserRunResult(
+                    status=BrowserRunStatus.ERROR,
+                    summary="Tarayıcı görevi sırasında hata oluştu.",
+                    last_url=holder.get("url"),
+                    screenshot_png=holder.get("shot"),
+                    raw_error=str(e),
+                )
+
+            agent_state = getattr(agent, "state", None)
+            agent_stopped = bool(getattr(agent_state, "stopped", False))
+            user_or_external_stop = is_stop_requested(tid) or (
+                agent_stopped and not holder["stop"]
+            )
+
+            if user_or_external_stop:
+                clear_stop(tid)
+                clear_pending_hitl(thread_id)
+                await dispose_cached_agent(thread_id)
+                _clear_run_ctx(thread_id)
+                cancelled = (
+                    "Görev kullanıcı tarafından durduruldu."
+                    if holder.get("reply_lang") == "tr"
+                    else "The task was stopped by the user."
+                )
+                return BrowserRunResult(
+                    status=BrowserRunStatus.CANCELLED,
+                    summary=cancelled,
+                    last_url=holder.get("url"),
+                    screenshot_png=holder.get("shot"),
+                )
+
+            if holder["stop"]:
+                q = _hitl_question(
+                    holder.get("url"),
+                    holder.get("title"),
+                    str(holder.get("reason")),
+                    agent_context=holder.get("agent_context"),
+                    reply_lang=str(holder.get("reply_lang") or "en"),
+                )
+                tail = None
+                try:
+                    tail = history.final_result()  # type: ignore[attr-defined]
+                except Exception:
+                    tail = None
+                reason_raw = holder.get("reason")
+                record_pending_hitl(
+                    thread_id,
+                    holder.get("url"),
+                    str(reason_raw) if reason_raw is not None else None,
+                )
+                return BrowserRunResult(
+                    status=BrowserRunStatus.NEEDS_HUMAN,
+                    summary="",
+                    last_url=holder.get("url"),
+                    screenshot_png=holder.get("shot"),
+                    question=q,
+                    history_tail=str(tail) if tail is not None else None,
+                    hitl_reason=str(reason_raw) if reason_raw is not None else None,
+                )
+
+            final_text: str | None = None
+            try:
+                final_text = history.final_result()  # type: ignore[attr-defined]
+            except Exception:
+                final_text = None
+            done_msg = (
+                "Görev tamamlandı." if holder.get("reply_lang") == "tr" else "Task completed."
+            )
+            summary = str(final_text).strip() if final_text else done_msg
             clear_pending_hitl(thread_id)
-            await dispose_cached_agent(thread_id)
+            pop_cached_agent(thread_id)
             _clear_run_ctx(thread_id)
             return BrowserRunResult(
-                status=BrowserRunStatus.ERROR,
-                summary="Tarayıcı görevi sırasında hata oluştu.",
+                status=BrowserRunStatus.DONE,
+                summary=summary,
                 last_url=holder.get("url"),
                 screenshot_png=holder.get("shot"),
-                raw_error=str(e),
             )
-
-        if holder["stop"]:
-            q = _hitl_question(
-                holder.get("url"),
-                holder.get("title"),
-                str(holder.get("reason")),
-                agent_context=holder.get("agent_context"),
-            )
-            tail = None
-            try:
-                tail = history.final_result()  # type: ignore[attr-defined]
-            except Exception:
-                tail = None
-            reason_raw = holder.get("reason")
-            record_pending_hitl(
-                thread_id,
-                holder.get("url"),
-                str(reason_raw) if reason_raw is not None else None,
-            )
-            return BrowserRunResult(
-                status=BrowserRunStatus.NEEDS_HUMAN,
-                summary="",
-                last_url=holder.get("url"),
-                screenshot_png=holder.get("shot"),
-                question=q,
-                history_tail=str(tail) if tail is not None else None,
-                hitl_reason=str(reason_raw) if reason_raw is not None else None,
-            )
-
-        final_text: str | None = None
-        try:
-            final_text = history.final_result()  # type: ignore[attr-defined]
-        except Exception:
-            final_text = None
-        done_msg = (
-            "Görev tamamlandı." if holder.get("reply_lang") == "tr" else "Task completed."
-        )
-        summary = str(final_text).strip() if final_text else done_msg
-        clear_pending_hitl(thread_id)
-        pop_cached_agent(thread_id)
-        _clear_run_ctx(thread_id)
-        return BrowserRunResult(
-            status=BrowserRunStatus.DONE,
-            summary=summary,
-            last_url=holder.get("url"),
-            screenshot_png=holder.get("shot"),
-        )
+        finally:
+            await mark_browser_run_idle(tid)

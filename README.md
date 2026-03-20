@@ -31,6 +31,7 @@
 - **Telegram-native control** — send a task in chat; a LangGraph + Gemini agent plans and executes it.
 - **Real browser automation** — [browser-use](https://github.com/browser-use/browser-use) drives Chromium via Playwright (not brittle “fake” scraping-only flows).
 - **Human-in-the-loop (HITL)** — on logins, 2FA, or sensitive steps, the graph **interrupts**, sends a **screenshot + question** to Telegram, and **resumes** when you reply.
+- **Live progress + stop** — short, human-friendly status lines (same language as your task) while the embedded browser agent runs. **`/stop`** / **`/dur`** requests a cooperative stop between actions/steps; **during a single LLM call** inside browser-use, shutdown may wait until that call finishes. The bot uses **concurrent Telegram update processing** so `/stop` is handled while a long `ainvoke` is still running (default single-threaded PTB would queue `/stop` until the graph call finished).
 - **Self-hosted** — your machine or your container; your API keys, your data boundary.
 - **Durable runs** — LangGraph checkpoints to **SQLite** (`AsyncSqliteSaver`) so conversations and state survive restarts (configurable path).
 
