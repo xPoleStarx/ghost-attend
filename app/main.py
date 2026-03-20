@@ -30,8 +30,11 @@ except ModuleNotFoundError as e:
 
 
 def main() -> None:
-    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
     settings = get_settings()
+    configure_logging(
+        os.environ.get("LOG_LEVEL", "INFO"),
+        redact_telegram_token=settings.log_redact_telegram_token,
+    )
     run_bot(settings)
 
 

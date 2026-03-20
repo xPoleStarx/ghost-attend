@@ -21,11 +21,48 @@ logger = logging.getLogger(__name__)
 _sessions: dict[str, Any] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
+# browser-use _navigate_and_wait çapraz alan için sabit 8 sn kullanır; holder üzerinden yüksütülür.
+_nav_readiness_seconds: dict[str, float] = {"value": 18.0}
+_nav_readiness_patch_done: bool = False
+
 
 def _lock_for(thread_id: str) -> asyncio.Lock:
     if thread_id not in _locks:
         _locks[thread_id] = asyncio.Lock()
     return _locks[thread_id]
+
+
+def _ensure_nav_readiness_patch() -> None:
+    """NavigateToUrlEvent timeout_ms vermediğinde kullanılan hazırlık süresini Settings ile hizala."""
+    global _nav_readiness_patch_done
+
+    if _nav_readiness_patch_done:
+        return
+
+    from browser_use.browser.session import BrowserSession
+
+    _orig = BrowserSession._navigate_and_wait
+
+    async def _patched_navigate_and_wait(
+        self: Any,
+        url: str,
+        target_id: str,
+        timeout: float | None = None,
+        wait_until: str = "load",
+    ) -> None:
+        if timeout is None:
+            target = self.session_manager.get_target(target_id)
+            current_url = target.url
+            same_domain = (
+                url.split("/")[2] == current_url.split("/")[2]
+                if url.startswith("http") and current_url.startswith("http")
+                else False
+            )
+            timeout = 3.0 if same_domain else float(_nav_readiness_seconds["value"])
+        await _orig(self, url, target_id, timeout=timeout, wait_until=wait_until)
+
+    BrowserSession._navigate_and_wait = _patched_navigate_and_wait  # type: ignore[method-assign]
+    _nav_readiness_patch_done = True
 
 
 def _register_reconnection_failed_cleanup(sess: Any, thread_id: str) -> None:
@@ -52,7 +89,7 @@ def _register_reconnection_failed_cleanup(sess: Any, thread_id: str) -> None:
                 logger.exception("BrowserSession.kill after ReconnectionFailed thread_id=%s", thread_id)
             else:
                 logger.info(
-                    "Tarayıcı oturumu temizlendi (yeniden bağlanılamadı). Sonraki görev yeni pencere açar. thread_id=%s",
+                    "Tarayıcı oturumu temizlendi (yeniden bağlanamadı). Sonraki görev yeni pencere açar. thread_id=%s",
                     thread_id,
                 )
 
@@ -65,6 +102,9 @@ async def get_session(thread_id: str, settings: "Settings") -> Any:
     """Aynı sohbet için yeniden kullanılan oturum; ilk çağrıda oluşturulur."""
     from browser_use import BrowserSession
 
+    _nav_readiness_seconds["value"] = float(settings.browser_nav_readiness_timeout)
+    _ensure_nav_readiness_patch()
+
     async with _lock_for(thread_id):
         existing = _sessions.get(thread_id)
         if existing is not None:
@@ -72,6 +112,10 @@ async def get_session(thread_id: str, settings: "Settings") -> Any:
         sess = BrowserSession(
             headless=settings.playwright_headless,
             keep_alive=True,
+            cross_origin_iframes=settings.browser_cross_origin_iframes,
+            minimum_wait_page_load_time=settings.browser_minimum_wait_page_load_time,
+            wait_for_network_idle_page_load_time=settings.browser_wait_for_network_idle_page_load_time,
+            wait_between_actions=settings.browser_wait_between_actions,
         )
         _register_reconnection_failed_cleanup(sess, thread_id)
         _sessions[thread_id] = sess

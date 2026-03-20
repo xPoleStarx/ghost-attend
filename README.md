@@ -49,6 +49,8 @@
 
 Before first run: copy `.env.example` → `.env` and set **`TELEGRAM_BOT_TOKEN`** and **`GOOGLE_API_KEY`**.
 
+**Logging / Telegram token:** If your console ever shows a full `api.telegram.org/bot…` URL, treat the token as leaked—revoke it with [@BotFather](https://t.me/BotFather) and set a new one. By default, `httpx` no longer logs every request at INFO, and the root handler can redact `/bot<token>/` in messages (`LOG_REDACT_TELEGRAM_TOKEN`; see `.env.example`).
+
 **Step-by-step (all paths, verification tips):** [QUICKSTART.md](QUICKSTART.md)
 
 ---
