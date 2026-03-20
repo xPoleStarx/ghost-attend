@@ -131,8 +131,7 @@ Template: [`.env.example`](.env.example)
 
 </details>
 
-<details>
-<summary><strong>Telegram commands</strong></summary>
+## Telegram commands
 
 Registered in [`app/telegram/bot.py`](app/telegram/bot.py):
 
@@ -143,10 +142,7 @@ Registered in [`app/telegram/bot.py`](app/telegram/bot.py):
 | `/tarayici` | Closes the browser-use session for this chat; the next web task starts fresh Chromium. |
 | `/temizle` or `/reset` | Resets conversation context for this chat. |
 
-</details>
-
-<details>
-<summary><strong>Troubleshooting</strong></summary>
+## Troubleshooting
 
 | Issue | What to try |
 |-------|-------------|
@@ -160,19 +156,13 @@ Registered in [`app/telegram/bot.py`](app/telegram/bot.py):
 
 **Dependency source of truth:** [`pyproject.toml`](pyproject.toml). [`requirements.txt`](requirements.txt) exists for optional manual `pip install -r` only; `Run.ps1` / `Run.sh` install from the package definition.
 
-</details>
-
-<details>
-<summary><strong>Security</strong></summary>
+## Security
 
 Never commit `.env` (see [`.gitignore`](.gitignore)). If a token or key leaks, rotate it immediately in BotFather / Google AI Studio. Do not paste secrets into issues or PRs.
 
 For responsible disclosure of security issues, contact the maintainer (see below) privately first.
 
-</details>
-
-<details>
-<summary><strong>Manual setup & Makefile</strong></summary>
+## Manual setup & Makefile
 
 ```bash
 cd GhostMyShit
@@ -194,8 +184,6 @@ Dev extras: `python -m pip install -e ".[dev]"` then `python -m pytest`.
 **Makefile** (if `make` is available): `make install`, `make run`, `make test`.
 
 Full guided setup: [QUICKSTART.md](QUICKSTART.md).
-
-</details>
 
 ---
 
