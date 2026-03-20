@@ -72,3 +72,7 @@ temp/
 
 # --- Paketleme / hatch ---
 .hatch/
+
+# --- Görseller (geçici) ---
+assets/shitty.png
+assets/shitty_no_bg.png
