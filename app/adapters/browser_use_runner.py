@@ -5,6 +5,12 @@ import logging
 import re
 from typing import Any
 
+from app.adapters.browser_agent_holder import (
+    dispose_cached_agent,
+    get_cached_agent,
+    pop_cached_agent,
+    set_cached_agent,
+)
 from app.adapters.hitl_pending import (
     clear_pending_hitl,
     record_pending_hitl,
@@ -26,6 +32,8 @@ _LOGIN_FRAGMENTS = (
     "/session",
     "/account/login",
     "/wp-login",
+    "/giris",
+    "giris.",
 )
 
 # Arayüz metinleri ("Öğrenci Girişi", "sign in" linki vb.) yanlışlıkla tetiklemesin diye
@@ -43,8 +51,6 @@ _SENSITIVE_TERMS = (
     "sifre",
     "doğrulama kodu",
     "dogrulama kodu",
-    "e-posta adres",
-    "email address",
 )
 
 
@@ -133,13 +139,19 @@ _INLINE_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _INLINE_PASSWORD_QUOTED = re.compile(
     r"(?i)(password|şifre|sifre)\s*['\"]([^'\"]{2,})['\"]",
 )
+# user@mail.com / şifre veya user@mail.com / pass123
+_INLINE_EMAIL_SLASH_PASSWORD = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*/\s*[^\s\n,;]+",
+)
 
 
 def _task_has_inline_credentials(full_task: str) -> bool:
-    """Görev metninde e-posta + tırnaklı şifre (veya şifre alanı) varsa giriş HITL atlanır."""
+    """Görev metninde e-posta + şifre (tırnaklı veya e-posta / şifre) varsa giriş HITL atlanır."""
     if not full_task or not _INLINE_EMAIL.search(full_task):
         return False
-    return bool(_INLINE_PASSWORD_QUOTED.search(full_task))
+    if _INLINE_PASSWORD_QUOTED.search(full_task):
+        return True
+    return bool(_INLINE_EMAIL_SLASH_PASSWORD.search(full_task))
 
 
 def _agent_suggests_sensitive(agent_output: Any) -> bool:
@@ -239,6 +251,35 @@ def _agent_context_blurb(agent_output: Any) -> str | None:
     return blob[:2500] if blob else None
 
 
+# thread_id başına: HITL bayrakları + her run_task turunda güncellenen görev metni (Agent önbellekte
+# kaldığında callback closure'ının eski hints_list/full_task tutmaması için).
+_run_ctx: dict[str, dict[str, Any]] = {}
+
+
+def _init_run_ctx(thread_id: str, hints_list: list[str], full_task: str) -> dict[str, Any]:
+    tid = str(thread_id)
+    ctx = {
+        "stop": False,
+        "shot": None,
+        "url": None,
+        "title": None,
+        "reason": None,
+        "agent_context": None,
+        "hints_list": list(hints_list),
+        "full_task": full_task,
+    }
+    _run_ctx[tid] = ctx
+    return ctx
+
+
+def _run_ctx_for(thread_id: str) -> dict[str, Any]:
+    return _run_ctx[str(thread_id)]
+
+
+def _clear_run_ctx(thread_id: str) -> None:
+    _run_ctx.pop(str(thread_id), None)
+
+
 class BrowserUseRunner:
     """browser-use Agent sarmalayıcı: adım callback + güvenli durdurma (HITL)."""
 
@@ -265,70 +306,99 @@ class BrowserUseRunner:
             if syn:
                 hints_list = list(syn)
         full_task = _merge_task(task, hints_list)
-        holder: dict[str, Any] = {
-            "stop": False,
-            "shot": None,
-            "url": None,
-            "title": None,
-            "reason": None,
-            "agent_context": None,
-        }
+        holder = _init_run_ctx(thread_id, hints_list, full_task)
+
+        tid = str(thread_id)
 
         async def on_step(browser_state: Any, agent_output: Any, step: int) -> None:
+            ctx = _run_ctx_for(tid)
             url = getattr(browser_state, "url", "") or ""
             title = getattr(browser_state, "title", "") or ""
-            holder["url"] = url or holder["url"]
-            holder["title"] = title or holder["title"]
+            ctx["url"] = url or ctx["url"]
+            ctx["title"] = title or ctx["title"]
             png = _to_png_bytes(getattr(browser_state, "screenshot", None))
             if png:
-                holder["shot"] = png
+                ctx["shot"] = png
+            ft = str(ctx.get("full_task") or "")
+            hl = ctx.get("hints_list") or []
             # Kullanıcıdan ek bilgi geldiyse (interrupt sonrası): giriş sayfasında tekrar durdurma —
             # aksi halde her tur login.aspx yüzünden kesiliyor, tarayıcı sıfırlanıyor, döngü oluşuyor.
-            if not hints_list:
+            if not hl:
                 if _agent_prioritizing_captcha(agent_output, url, title):
                     logger.info("HITL defer: captcha/güvenlik kodu adımı — iç ajanın çözmesine izin veriliyor")
                     return
                 if _looks_like_login_surface(url, title):
-                    if _task_suppresses_login_surface_hitl(full_task):
+                    if _task_suppresses_login_surface_hitl(ft):
                         logger.info(
                             "HITL defer: görev giriş yapmadan gözlem/doğrulama istiyor — login yüzeyi kesilmiyor"
                         )
                         return
-                    if _task_has_inline_credentials(full_task):
+                    if _task_has_inline_credentials(ft):
                         logger.info(
                             "HITL defer: görev metninde satır içi e-posta/şifre var — iç ajanın doldurmasına izin veriliyor"
                         )
                         return
-                    holder["reason"] = "login_or_auth_surface"
-                    holder["agent_context"] = _agent_context_blurb(agent_output)
-                    holder["stop"] = True
+                    ctx["reason"] = "login_or_auth_surface"
+                    ctx["agent_context"] = _agent_context_blurb(agent_output)
+                    ctx["stop"] = True
                     logger.info("HITL trigger: login/auth surface (url/title)")
                     return
                 if _agent_suggests_sensitive(agent_output):
-                    holder["reason"] = "model_indicated_sensitive_step"
-                    holder["agent_context"] = _agent_context_blurb(agent_output)
-                    holder["stop"] = True
+                    ctx["reason"] = "model_indicated_sensitive_step"
+                    ctx["agent_context"] = _agent_context_blurb(agent_output)
+                    ctx["stop"] = True
                     logger.info("HITL trigger: agent output suggests sensitive step")
 
         async def should_stop() -> bool:
-            return bool(holder["stop"])
+            return bool(_run_ctx_for(tid)["stop"])
 
         from browser_use import Agent
 
         browser_session = await get_session(thread_id, self._settings)
-        agent = Agent(
-            task=full_task,
-            llm=self._llm(),
-            browser_session=browser_session,
-            register_new_step_callback=on_step,
-            register_should_stop_callback=should_stop,
-            step_timeout=self._settings.browser_step_timeout,
-        )
+        continuation = bool(hints_list)
+        cached = get_cached_agent(thread_id)
+
+        if continuation and cached is not None:
+            agent = cached
+            agent.add_new_task(full_task)
+            logger.info(
+                "Aynı browser-use Agent ile devam (add_new_task) thread_id=%s — takip görevi, URL yeniden navigasyonu atlanır",
+                tid,
+            )
+        elif continuation and cached is None:
+            logger.warning(
+                "HITL devamı bekleniyordu ancak önbellekte Agent yok; yeni Agent oluşturuluyor thread_id=%s",
+                tid,
+            )
+            agent = Agent(
+                task=full_task,
+                llm=self._llm(),
+                browser_session=browser_session,
+                register_new_step_callback=on_step,
+                register_should_stop_callback=should_stop,
+                step_timeout=self._settings.browser_step_timeout,
+            )
+            set_cached_agent(thread_id, agent)
+        else:
+            if cached is not None:
+                await dispose_cached_agent(thread_id)
+            agent = Agent(
+                task=full_task,
+                llm=self._llm(),
+                browser_session=browser_session,
+                register_new_step_callback=on_step,
+                register_should_stop_callback=should_stop,
+                step_timeout=self._settings.browser_step_timeout,
+            )
+            set_cached_agent(thread_id, agent)
+
         try:
             history = await agent.run(max_steps=self._settings.browser_max_steps)
         except Exception as e:
             logger.exception("browser-use run failed")
             clear_pending_hitl(thread_id)
+            await dispose_cached_agent(thread_id)
+            _clear_run_ctx(thread_id)
             return BrowserRunResult(
                 status=BrowserRunStatus.ERROR,
                 summary="Tarayıcı görevi sırasında hata oluştu.",
@@ -372,6 +442,8 @@ class BrowserUseRunner:
             final_text = None
         summary = str(final_text).strip() if final_text else "Görev tamamlandı."
         clear_pending_hitl(thread_id)
+        pop_cached_agent(thread_id)
+        _clear_run_ctx(thread_id)
         return BrowserRunResult(
             status=BrowserRunStatus.DONE,
             summary=summary,

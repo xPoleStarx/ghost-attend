@@ -59,3 +59,8 @@ def test_inline_credentials_detected():
     )
     assert _task_has_inline_credentials(t)
     assert not _task_has_inline_credentials("Open dys.mu.edu.tr and tell me the page title")
+
+
+def test_inline_credentials_email_slash_password():
+    t = "Trendyol.com sitesine git ve seyfullahkorkmaz115@gmail.com / 123456 bilgileriyle giriş yap."
+    assert _task_has_inline_credentials(t)

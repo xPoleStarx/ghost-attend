@@ -10,6 +10,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.adapters.browser_agent_holder import clear_cached_agent_sync
 from app.adapters.hitl_pending import clear_pending_hitl
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ async def get_session(thread_id: str, settings: "Settings") -> Any:
 async def kill_session(thread_id: str) -> None:
     """Sohbet için önbellekteki oturumu kapat (manuel /tarayici veya sıfırlama)."""
     clear_pending_hitl(thread_id)
+    clear_cached_agent_sync(thread_id)
     async with _lock_for(thread_id):
         sess = _sessions.pop(thread_id, None)
     if sess is not None:
