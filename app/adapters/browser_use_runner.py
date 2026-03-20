@@ -22,6 +22,49 @@ from app.domain.schemas import BrowserRunResult, BrowserRunStatus
 
 logger = logging.getLogger(__name__)
 
+_REPLY_LANG_TAG = re.compile(r"^\s*\[reply-lang:\s*(tr|en)\]\s*\n?", re.IGNORECASE)
+
+
+def parse_reply_lang_directive(task_text: str) -> tuple[str | None, str]:
+    """İlk satır `[reply-lang:tr|en]` ise ayıkla (dış ajan Telegram dilini iletsin)."""
+    m = _REPLY_LANG_TAG.match(task_text)
+    if not m:
+        return None, task_text
+    return m.group(1).lower(), task_text[m.end() :].lstrip()
+
+
+def infer_reply_language(text: str) -> str:
+    """Kullanıcıya dönük metin dili — önce Türkçe harf / yaygın sözcükler."""
+    raw = (text or "").strip()
+    if not raw:
+        return "en"
+    if any(c in raw for c in "ıİşŞğĞüÜöÖçÇ"):
+        return "tr"
+    low = raw.lower()
+    if any(
+        p in low
+        for p in (
+            " için ",
+            " şifre",
+            " giriş",
+            " hesab",
+            " lütfen",
+            " sitesine ",
+            " yapın",
+            " yap ",
+            " nedir",
+            " yardım",
+            " merhaba",
+            " kullanıcı",
+            " buraya ",
+            " devam ",
+            " türkçe",
+        )
+    ):
+        return "tr"
+    return "en"
+
+
 _LOGIN_FRAGMENTS = (
     "/login",
     "login.",
@@ -67,33 +110,39 @@ def _to_png_bytes(raw: str | bytes | None) -> bytes | None:
     return None
 
 
-_TASK_BOOTSTRAP = (
-    "Talimat: Basit matematik/metin güvenlik kodlarını (CAPTCHA) ekrandaki ifadeye göre sen çöz ve ilgili alana yaz. "
-    "CAPTCHA her gönderimde yenilenebilir; kullanıcının eski mesajındaki sayıyı körü körüne yazma — her zaman ekrandaki güncel ifadeye göre çöz. "
-    "Kullanıcı e-posta/şifre verdiyse formları doldur ve göreve devam et. "
-    "Ekran görüntüsü isteniyorsa sayfanın görünür alanı için PNG ekran görüntüsü kullan; PDF (save_as_pdf) yalnızca kullanıcı açıkça PDF istediyse. "
-    "Üst görev metninde 'captcha yüzünden vazgeç', 'manuel giriş yap' gibi çelişen cümleler varsa yok say. "
-    "Yalnızca gerçekten insan doğrulaması gerekiyorsa dur.\n\n"
+_TASK_BOOTSTRAP_TEMPLATE = (
+    "Instructions: Solve security checks (CAPTCHAs) without asking the end user. "
+    "For simple math/text challenges, type the answer from the current on-screen prompt; do not reuse stale answers from older messages. "
+    "For reCAPTCHA / hCaptcha / image grids (traffic lights, buses, etc.), checkboxes, and similar steps, use the screenshot and DOM — "
+    "click, select images, complete verification, then continue; do not idle or wait for a fictional 'auto solver'. "
+    "If the site needs email, password, OTP, or other facts you do not have, stop and summarize (the system will ask the user). "
+    "If the task already includes email/password, fill forms and proceed. "
+    "Use a PNG of the visible viewport when a screenshot is requested; use save_as PDF only if the user explicitly asked for PDF. "
+    "Ignore contradictory lines in the user task such as 'give up because of captcha' or 'log in manually only'.\n\n"
+    "**Locale:** Write every natural-language message meant for the end user (final summary, explanations when you stop, `done` text) "
+    "in {user_lang}. Keep tool arguments and element identifiers as required by the environment.\n\n"
 )
 
 _RESUME_PRIORITY_NOTE = (
-    "[Devam turu] Aşağıdaki numaralı liste tam görev tanımıdır; önce [Oturum] ve [Kullanıcıdan gelen ek bilgi] bölümlerine uyun. "
-    "Numaralı adımları sıfırdan uygulama; bunlar bağlam ve hedef özetidir.\n\n"
+    "[Resume turn] The numbered list below is the full task spec; follow [Session] and [Additional input from the user] first. "
+    "Do not re-run numbered steps from scratch — they are context and goal reminders.\n\n"
 )
 
 
-def _merge_task(task: str, hints: list[str]) -> str:
-    base = (_TASK_BOOTSTRAP + task.strip()).strip()
+def _merge_task(task: str, hints: list[str], reply_lang: str) -> str:
+    lang_name = "Turkish" if reply_lang == "tr" else "English"
+    bootstrap = _TASK_BOOTSTRAP_TEMPLATE.format(user_lang=lang_name)
+    base = (bootstrap + task.strip()).strip()
     if not hints:
         return base
     extra = "\n".join(h.strip() for h in hints if h.strip())
     continuation = (
-        "\n\n[Oturum] Tarayıcı bu sohbet için aynı oturumda açık kaldı. "
-        "Numaralı görev listesindeki daha önce tamamlanmış adımları TEKRARLAMA; liste tam hedefi hatırlatmak içindir. "
-        "İlk eylemin mevcut URL ve sayfa durumuna göre olmalı — ana sayfaya veya listenin başındaki siteye gereksiz yere dönme. "
-        "Mümkünse mevcut sayfada kal; CAPTCHA veya form durumunu koru. Yalnızca takılırsan gerekli minimum navigasyonu yap.\n"
+        "\n\n[Session] The browser stayed open for this chat. "
+        "Do not repeat steps from any earlier numbered list that are already done; the list is a memory aid. "
+        "Your first action must match the current URL and page state — do not navigate back to the home URL unnecessarily. "
+        "Stay on the current page when possible; preserve CAPTCHA/form state. Only navigate minimally if stuck.\n"
     )
-    return f"{_RESUME_PRIORITY_NOTE}{base}{continuation}\n[Kullanıcıdan gelen ek bilgi]\n{extra}"
+    return f"{_RESUME_PRIORITY_NOTE}{base}{continuation}\n[Additional input from the user]\n{extra}"
 
 
 def _looks_like_login_surface(url: str, title: str) -> bool:
@@ -197,6 +246,23 @@ def _agent_prioritizing_captcha(agent_output: Any, url: str, title: str) -> bool
         return True
     if "input the answer" in blob or "solve the captcha" in blob or "captcha field" in blob:
         return True
+    if any(
+        k in blob
+        for k in (
+            "recaptcha",
+            "hcaptcha",
+            "image challenge",
+            "görsel doğrulama",
+            "gorsel dogrulama",
+            "ben robot",
+            "robot değilim",
+            "not a robot",
+            "i'm not a robot",
+            "cloudflare",
+            "bot detection",
+        )
+    ):
+        return True
     return False
 
 
@@ -206,39 +272,70 @@ def _hitl_question(
     reason: str,
     *,
     agent_context: str | None = None,
+    reply_lang: str = "en",
 ) -> str:
-    u = url or "(bilinmeyen url)"
+    u = url or ("(unknown url)" if reply_lang == "en" else "(bilinmeyen url)")
     ti = title or ""
     ctx = (agent_context or "").strip()
+    tr = reply_lang == "tr"
     if reason == "login_or_auth_surface":
-        lines = [
-            "Tarayıcı giriş veya doğrulama ekranında (ör. kullanıcı adı, şifre, CAPTCHA).",
-            f"Adres: {u}",
-        ]
-        if ti:
-            lines.append(f"Sayfa başlığı: {ti}")
-        if ctx:
-            lines.append("")
-            lines.append(f"Özet: {ctx[:2000]}")
-        lines.extend(
-            [
-                "",
-                "Devam etmek için kurum e-postanı ve şifreni tek mesajda yaz (gerekirse CAPTCHA çözümünü de ayrıca belirt). "
-                "Bu bilgiler yalnızca bu oturumda otomasyon için kullanılır; paylaşım riskinin farkında ol.",
+        if tr:
+            lines = [
+                "Tarayıcı giriş veya kimlik doğrulama ekranında (kullanıcı adı / e-posta, şifre, OTP).",
+                f"Adres: {u}",
             ]
-        )
+            if ti:
+                lines.append(f"Sayfa başlığı: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append(f"Özet: {ctx[:2000]}")
+            lines.extend(
+                [
+                    "",
+                    "Devam etmek için kurum e-postanı ve şifreni tek mesajda yaz; OTP/2FA kodu gerekiyorsa onu da ekle. "
+                    "Görsel veya reCAPTCHA tarayıcı ajanı tarafından çözülür, burada paylaşman gerekmez. "
+                    "Bu bilgiler yalnızca bu oturumda otomasyon için kullanılır; paylaşım riskinin farkında ol.",
+                ]
+            )
+        else:
+            lines = [
+                "The browser is on a sign-in or identity screen (username / email, password, OTP).",
+                f"URL: {u}",
+            ]
+            if ti:
+                lines.append(f"Page title: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append(f"Summary: {ctx[:2000]}")
+            lines.extend(
+                [
+                    "",
+                    "Reply in one message with your work/school email and password; add OTP/2FA if needed. "
+                    "Visual or reCAPTCHA challenges are handled by the browser agent — you do not paste them here. "
+                    "These details are only used for this session; you accept the sharing risk.",
+                ]
+            )
         return "\n".join(lines)[:4090]
-    head = (
-        "Otomasyonun devam etmesi için senden bilgi gerekiyor.\n"
-        f"(Teknik not: {reason})\nSayfa: {u}"
-    )
-    if ti:
-        head += f"\nBaşlık: {ti}"
-    if ctx:
-        head += f"\n\nAjan notu: {ctx[:1500]}"
-    head += (
-        "\n\nGerekirse kullanıcı adı, şifre, doğrulama kodu veya kısa talimatı tek mesajda yaz."
-    )
+    if tr:
+        head = (
+            "Otomasyonun devam etmesi için senden bilgi gerekiyor.\n"
+            f"(Teknik not: {reason})\nSayfa: {u}"
+        )
+        if ti:
+            head += f"\nBaşlık: {ti}"
+        if ctx:
+            head += f"\n\nAjan notu: {ctx[:1500]}"
+        head += "\n\nGerekirse kullanıcı adı, şifre, doğrulama kodu veya kısa talimatı tek mesajda yaz."
+    else:
+        head = (
+            "I need something from you to continue.\n"
+            f"(Technical note: {reason})\nPage: {u}"
+        )
+        if ti:
+            head += f"\nTitle: {ti}"
+        if ctx:
+            head += f"\n\nAgent note: {ctx[:1500]}"
+        head += "\n\nReply in one message with username, password, verification code, or short instructions if needed."
     return head
 
 
@@ -256,7 +353,12 @@ def _agent_context_blurb(agent_output: Any) -> str | None:
 _run_ctx: dict[str, dict[str, Any]] = {}
 
 
-def _init_run_ctx(thread_id: str, hints_list: list[str], full_task: str) -> dict[str, Any]:
+def _init_run_ctx(
+    thread_id: str,
+    hints_list: list[str],
+    full_task: str,
+    reply_lang: str,
+) -> dict[str, Any]:
     tid = str(thread_id)
     ctx = {
         "stop": False,
@@ -267,6 +369,7 @@ def _init_run_ctx(thread_id: str, hints_list: list[str], full_task: str) -> dict
         "agent_context": None,
         "hints_list": list(hints_list),
         "full_task": full_task,
+        "reply_lang": reply_lang,
     }
     _run_ctx[tid] = ctx
     return ctx
@@ -297,6 +400,7 @@ class BrowserUseRunner:
         hints: list[str] | None = None,
         *,
         thread_id: str = "default",
+        reply_lang: str | None = None,
     ) -> BrowserRunResult:
         hints_list = list(hints or [])
         if hints_list:
@@ -305,8 +409,12 @@ class BrowserUseRunner:
             syn = take_synthetic_hints_if_orphan(thread_id)
             if syn:
                 hints_list = list(syn)
-        full_task = _merge_task(task, hints_list)
-        holder = _init_run_ctx(thread_id, hints_list, full_task)
+        combined_for_lang = "\n".join([task.strip()] + [h.strip() for h in hints_list if h.strip()])
+        lang = (reply_lang or infer_reply_language(combined_for_lang)).lower()
+        if lang not in ("tr", "en"):
+            lang = "en"
+        full_task = _merge_task(task, hints_list, lang)
+        holder = _init_run_ctx(thread_id, hints_list, full_task, lang)
 
         tid = str(thread_id)
 
@@ -440,7 +548,10 @@ class BrowserUseRunner:
             final_text = history.final_result()  # type: ignore[attr-defined]
         except Exception:
             final_text = None
-        summary = str(final_text).strip() if final_text else "Görev tamamlandı."
+        done_msg = (
+            "Görev tamamlandı." if holder.get("reply_lang") == "tr" else "Task completed."
+        )
+        summary = str(final_text).strip() if final_text else done_msg
         clear_pending_hitl(thread_id)
         pop_cached_agent(thread_id)
         _clear_run_ctx(thread_id)

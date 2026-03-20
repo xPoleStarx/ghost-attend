@@ -8,7 +8,11 @@ from langchain_core.tools import tool
 from langgraph.config import get_config
 from langgraph.types import interrupt
 
-from app.adapters.browser_use_runner import BrowserUseRunner
+from app.adapters.browser_use_runner import (
+    BrowserUseRunner,
+    infer_reply_language,
+    parse_reply_lang_directive,
+)
 from app.adapters.screenshot import capture_url_png
 from app.agent.media_delivery import stash_screenshot_png
 from app.domain.schemas import BrowserRunResult, BrowserRunStatus
@@ -23,27 +27,27 @@ _HITL_TAIL_MAX = 4000
 
 def _hitl_reason_label(reason: str | None) -> str:
     if not reason:
-        return "bilinmiyor"
+        return "unknown"
     if reason == "login_or_auth_surface":
-        return "giriş veya kimlik doğrulama ekranı"
+        return "login or identity screen"
     if reason == "model_indicated_sensitive_step":
-        return "hassas adım (şifre, OTP, 2FA vb.)"
+        return "sensitive step (password, OTP, 2FA, etc.)"
     return str(reason)
 
 
 def _continuation_block_after_hitl(result: BrowserRunResult) -> str:
     tail = (result.history_tail or "").strip()
     if len(tail) > _HITL_TAIL_MAX:
-        tail = tail[:_HITL_TAIL_MAX] + "\n…[kısaltıldı]"
+        tail = tail[:_HITL_TAIL_MAX] + "\n…[truncated]"
     lines = [
-        "[Otomatik devam bağlamı — kesintiden hemen sonra]",
-        f"Durma nedeni: {_hitl_reason_label(result.hitl_reason)}",
-        f"Son URL: {result.last_url or '(bilinmeyen)'}",
-        "Son ajan çıktısı / özet:",
-        tail or "(özet yok)",
+        "[Auto-resume context — right after interrupt]",
+        f"Stop reason: {_hitl_reason_label(result.hitl_reason)}",
+        f"Last URL: {result.last_url or '(unknown)'}",
+        "Last agent output / summary:",
+        tail or "(none)",
         "",
-        "Kurallar: Numaralı listedeki adımları baştan sırayla uygulama; mevcut sayfayı ve oturumu esas al. "
-        "Yalnızca kalan hedefe ilerle; gereksiz tekrar navigasyon yapma.",
+        "Rules: Do not re-run numbered steps from the beginning; use the current page and session. "
+        "Move only toward the remaining goal; avoid redundant navigation.",
     ]
     return "\n".join(lines)
 
@@ -82,35 +86,53 @@ def build_task_tools(settings: "Settings"):
     async def run_browser_automation(task: str) -> str:
         """Use for ANY real website workflow (open URL, click menus, student login, screenshots after navigation).
 
-        Pass one detailed instruction: starting URL, exact clicks/menus, and goal (e.g. screenshot of schedule page).
+        Start with a first line `[reply-lang:tr]` or `[reply-lang:en]` matching the user's chat language, then a blank line, then the task (URLs, steps, credentials).
         Do not skip this tool to answer about CAPTCHA or "manual login" — run first, then interpret the result.
         The embedded agent may pause to ask the user for credentials via Telegram."""
         runner = BrowserUseRunner(settings)
-        instruction = task.strip()
+        forced_lang, instruction = parse_reply_lang_directive(task.strip())
         hints: list[str] = []
         tid = _thread_id_from_context()
 
         while True:
-            result = await runner.run_task(instruction, hints, thread_id=tid)
+            # İlk tur: [reply-lang:…] varsa onu kullan. HITL sonrası ipuçlarında kullanıcı dili baskınsa yeniden çıkar.
+            lang_kw: str | None = forced_lang if not hints else None
+            result = await runner.run_task(
+                instruction,
+                hints,
+                thread_id=tid,
+                reply_lang=lang_kw,
+            )
             if result.status == BrowserRunStatus.NEEDS_HUMAN:
                 shot_b64: str | None = None
                 if result.screenshot_png:
                     shot_b64 = base64.b64encode(result.screenshot_png).decode("ascii")
+                ulang = forced_lang or infer_reply_language(
+                    instruction + "\n" + "\n".join(h.strip() for h in hints if h.strip())
+                )
+                caption = (
+                    "Tarayıcı ekranı — yukarıdaki metni oku, ardından yanıt ver."
+                    if ulang == "tr"
+                    else "Browser view — read the text above, then reply."
+                )
                 resume_value = interrupt(
                     {
                         "question": result.question or "More information needed to continue.",
                         "screenshot_png_b64": shot_b64,
                         "last_url": result.last_url,
-                        "photo_caption": "Tarayıcı ekranı — yukarıdaki metni oku, ardından yanıt ver.",
+                        "photo_caption": caption,
                     }
                 )
                 text = str(resume_value).strip() if resume_value is not None else ""
                 if text:
                     hints.append(text)
                 else:
-                    hints.append(
-                        "[Kullanıcı yanıtı boş; mevcut tarayıcı sayfasında ve oturumda devam et]"
+                    empty = (
+                        "[User reply was empty; continue on the current browser page and session.]"
+                        if ulang != "tr"
+                        else "[Kullanıcı yanıtı boş; mevcut tarayıcı sayfasında ve oturumda devam et.]"
                     )
+                    hints.append(empty)
                 hints.append(_continuation_block_after_hitl(result))
                 continue
             if result.status == BrowserRunStatus.ERROR:

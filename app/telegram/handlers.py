@@ -237,8 +237,8 @@ async def on_reset_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "Bu sohbet için bağlam sıfırlandı: kayıtlı konuşma geçmişi ve görev durumu temizlendi, "
-            "tarayıcı oturumu kapatıldı. Yeni isteğini sıfırdan yazabilirsin."
+            "Context reset for this chat: conversation history and task state were cleared, "
+            "and the browser session was closed. You can send a fresh request from scratch."
         ),
     )
 
@@ -249,12 +249,14 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=(
-            "Merhaba. Ne istediğini doğal dilde yaz; görevi Gemini araçlarla (tarayıcı, ekran görüntüsü, sana soru) "
-            "adım adım yürütür. Giriş veya 2FA gerekiyorsa sorarım.\n\n"
-            "Önemli: Açılan Chromium sekmesini veya penceresini elle kapatma — oturum kurtarma döngüsüne girebilirsin. "
-            "Kapatmak için her zaman: /tarayici\n\n"
-            "Eski konuşmayı unutturup sıfırdan başlamak: /temizle veya /reset (tarayıcıyı da kapatır)"
+            "👻 Hey — I'm *GhostMyShit*, your web agent.\n\n"
+            "🤖 Tell me what you need in plain language; I run sites *on my own* — navigate, click, fill forms, grab screenshots, "
+            "and work through multi-step jobs end-to-end. If something needs a password or 2FA, I'll ask you here.\n\n"
+            "⚠️ *Heads-up:* don't manually kill the automation browser window or tab — it can confuse the session. "
+            "To close it cleanly, use `/tarayici`.\n\n"
+            "🧹 Fresh start (wipes this chat's memory *and* the browser session): `/temizle` or `/reset`"
         ),
+        parse_mode="Markdown",
     )
 
 

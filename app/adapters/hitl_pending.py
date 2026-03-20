@@ -46,8 +46,8 @@ def take_synthetic_hints_if_orphan(thread_id: str) -> list[str] | None:
     if time.monotonic() - p.monotonic_ts > _TTL_SEC:
         _store.pop(tid, None)
         return None
-    u = p.last_url or "(bilinmeyen)"
-    r = p.hitl_reason or "bilinmiyor"
+    u = p.last_url or "(unknown)"
+    r = p.hitl_reason or "unknown"
     _store.pop(tid, None)
     logger.info(
         "HITL yetim araç çağrısı: sentetik devam ipuçları enjekte edildi thread_id=%s url=%s reason=%s",
@@ -56,9 +56,9 @@ def take_synthetic_hints_if_orphan(thread_id: str) -> list[str] | None:
         r,
     )
     return [
-        "[Otomatik — önceki HITL kesintisi bekleniyordu; bu tur yeni bir araç çağrısı olabilir.]\n"
-        f"Son durma nedeni: {r}\n"
-        f"Son URL: {u}\n"
-        "İlk eylemde görev metnindeki siteye tekrar navigate etme; mevcut sekmede kal. "
-        "Sayfa giriş formuysa kullanıcıdan gelen e-posta/şifre ile doldur ve ilerle.",
+        "[Auto — a prior HITL interrupt was expected; this turn may be a fresh tool call.]\n"
+        f"Last stop reason: {r}\n"
+        f"Last URL: {u}\n"
+        "Do not navigate again to the site's home in your first action; stay on the current tab. "
+        "If the page is a login form, use the email/password from the user's latest message and proceed.",
     ]
