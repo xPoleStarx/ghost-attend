@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 _sessions: dict[str, Any] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
+# Son bilinen sekme URL'si (thread başına) — boş-hint takip görevlerinde aynı Agent/add_new_task ile devam için.
+_thread_last_browser_url: dict[str, str] = {}
+
+
+def record_thread_last_browser_url(thread_id: str, url: str | None) -> None:
+    if not url or not str(url).strip():
+        return
+    _thread_last_browser_url[str(thread_id)] = str(url).strip()
+
+
+def get_thread_last_browser_url(thread_id: str) -> str | None:
+    u = _thread_last_browser_url.get(str(thread_id))
+    return u if u else None
+
+
+def clear_thread_browser_continuity(thread_id: str) -> None:
+    """kill_session / farklı domain ile yeni Agent öncesi: takip URL önbelleğini sil."""
+    _thread_last_browser_url.pop(str(thread_id), None)
+
 # browser-use _navigate_and_wait çapraz alan için sabit 8 sn kullanır; holder üzerinden yüksütülür.
 _nav_readiness_seconds: dict[str, float] = {"value": 18.0}
 _nav_readiness_patch_done: bool = False
@@ -127,6 +146,7 @@ async def kill_session(thread_id: str) -> None:
     """Sohbet için önbellekteki oturumu kapat (manuel /tarayici veya sıfırlama)."""
     clear_pending_hitl(thread_id)
     clear_cached_agent_sync(thread_id)
+    clear_thread_browser_continuity(thread_id)
     async with _lock_for(thread_id):
         sess = _sessions.pop(thread_id, None)
     if sess is not None:

@@ -6,10 +6,11 @@ import logging
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
+
 from app.adapters.browser_agent_holder import (
     dispose_cached_agent,
     get_cached_agent,
-    pop_cached_agent,
     set_cached_agent,
 )
 from app.adapters.hitl_pending import (
@@ -17,7 +18,12 @@ from app.adapters.hitl_pending import (
     record_pending_hitl,
     take_synthetic_hints_if_orphan,
 )
-from app.adapters.browser_session_holder import get_session
+from app.adapters.browser_session_holder import (
+    clear_thread_browser_continuity,
+    get_session,
+    get_thread_last_browser_url,
+    record_thread_last_browser_url,
+)
 from app.config.settings import Settings
 from app.domain.schemas import BrowserRunResult, BrowserRunStatus
 from app.run_control import (
@@ -117,6 +123,92 @@ _SENSITIVE_TERMS = (
     "doğrulama kodu",
     "dogrulama kodu",
 )
+
+# Giriş yüzeyi dışında: şifre kelimesi tek başına (ör. hafızada "şifre girildi") HITL üretmesin.
+_SENSITIVE_TERMS_STRICT = (
+    "otp",
+    "2fa",
+    "mfa",
+    "two-factor",
+    "two factor",
+    "verification code",
+    "doğrulama kodu",
+    "dogrulama kodu",
+    "authenticator",
+)
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s\]>\"')]+", re.IGNORECASE)
+
+
+def extract_primary_http_url(task_text: str) -> str | None:
+    """Görev metnindeki ilk http(s) URL (browser-use'un ilk navigate çıkarımı ile hizalı)."""
+    m = _URL_IN_TEXT.search(task_text or "")
+    if not m:
+        return None
+    return m.group(0).rstrip(".,);]\"")
+
+
+def _normalize_site_host(url: str) -> str | None:
+    try:
+        p = urlparse((url or "").strip())
+        if not p.netloc:
+            return None
+        h = p.netloc.lower()
+        if h.startswith("www."):
+            h = h[4:]
+        return h
+    except Exception:
+        return None
+
+
+def sites_match_for_continuity(a: str | None, b: str | None) -> bool:
+    """Aynı host (www. yok sayılır) — takip görevinde add_new_task kullanılıp kullanılmayacağı."""
+    ha, hb = _normalize_site_host(a or ""), _normalize_site_host(b or "")
+    if not ha or not hb:
+        return False
+    return ha == hb
+
+
+def _should_followup_on_live_session(thread_id: str, task_instruction: str) -> bool:
+    """Önbellekte Agent varken boş-hint turu: aynı site veya görevde URL yoksa mevcut sekmede devam."""
+    task_url = extract_primary_http_url(task_instruction)
+    last = get_thread_last_browser_url(thread_id)
+    if task_url is None:
+        return True
+    if last is None:
+        return True
+    return sites_match_for_continuity(task_url, last)
+
+
+def _credential_action_already_done_in_blob(blob: str) -> bool:
+    """Örn. 'şifre … girildi' — giriş sonrası yükleniyor adımında yanlış HITL'i engelle."""
+    b = blob.lower()
+    credish = any(
+        x in b
+        for x in (
+            "şifre",
+            "sifre",
+            "password",
+            "kullanıcı adı",
+            "kullanici adi",
+            "username",
+        )
+    )
+    if not credish:
+        return False
+    past_tr = (
+        "girildi",
+        "yazıldı",
+        "dolduruldu",
+        "gönderildi",
+        "giriş yapıldı",
+        "giris yapildi",
+        "girdi",
+        "tıklandı",
+        "tiklandi",
+    )
+    past_en = ("entered", "typed", "filled", "submitted", "clicked")
+    return any(p in b for p in past_tr) or any(p in b for p in past_en)
 
 
 def _to_png_bytes(raw: str | bytes | None) -> bytes | None:
@@ -252,7 +344,7 @@ def _task_has_inline_credentials(full_task: str) -> bool:
     return bool(_INLINE_EMAIL_SLASH_PASSWORD.search(full_task))
 
 
-def _agent_suggests_sensitive(agent_output: Any) -> bool:
+def _agent_suggests_sensitive(agent_output: Any, url: str, title: str) -> bool:
     if agent_output is None:
         return False
     cs = getattr(agent_output, "current_state", None)
@@ -264,7 +356,11 @@ def _agent_suggests_sensitive(agent_output: Any) -> bool:
         getattr(cs, "memory", None),
     ]
     blob = " ".join(str(p) for p in parts if p).lower()
-    return any(k in blob for k in _SENSITIVE_TERMS)
+    if _looks_like_login_surface(url, title):
+        return any(k in blob for k in _SENSITIVE_TERMS)
+    if _credential_action_already_done_in_blob(blob):
+        return False
+    return any(k in blob for k in _SENSITIVE_TERMS_STRICT)
 
 
 def _agent_prioritizing_captcha(agent_output: Any, url: str, title: str) -> bool:
@@ -555,7 +651,20 @@ class BrowserUseRunner:
         lang = (reply_lang or infer_reply_language(combined_for_lang)).lower()
         if lang not in ("tr", "en"):
             lang = "en"
+        cached = get_cached_agent(thread_id)
+        continuation = bool(hints_list) or (
+            cached is not None and _should_followup_on_live_session(thread_id, task)
+        )
         full_task = _merge_task(task, hints_list, lang)
+        if continuation and cached is not None and not hints_list:
+            lu = get_thread_last_browser_url(thread_id) or "(unknown — inspect current tab)"
+            full_task = (
+                full_task
+                + "\n\n[Session] Run mode: followup_on_live_session. The browser tab is already open in this chat. "
+                "Do not navigate to the site's landing or home URL unless the task explicitly requires a full restart "
+                "or the current page is clearly wrong. Prefer continuing from the current URL and session state.\n"
+                f"Last known URL: {lu}\n"
+            )
         holder = _init_run_ctx(
             thread_id,
             hints_list,
@@ -573,6 +682,8 @@ class BrowserUseRunner:
             title = getattr(browser_state, "title", "") or ""
             ctx["url"] = url or ctx["url"]
             ctx["title"] = title or ctx["title"]
+            if url:
+                record_thread_last_browser_url(tid, url)
             png = _to_png_bytes(getattr(browser_state, "screenshot", None))
             if png:
                 ctx["shot"] = png
@@ -613,7 +724,7 @@ class BrowserUseRunner:
                     ctx["stop"] = True
                     logger.info("HITL trigger: login/auth surface (url/title)")
                     return
-                if _agent_suggests_sensitive(agent_output):
+                if _agent_suggests_sensitive(agent_output, url, title):
                     ctx["reason"] = "model_indicated_sensitive_step"
                     ctx["agent_context"] = _agent_context_blurb(agent_output)
                     ctx["stop"] = True
@@ -629,16 +740,19 @@ class BrowserUseRunner:
 
         browser_session = await get_session(thread_id, self._settings)
         try:
-            continuation = bool(hints_list)
-            cached = get_cached_agent(thread_id)
-
             if continuation and cached is not None:
                 agent = cached
                 agent.add_new_task(full_task)
-                logger.info(
-                    "Aynı browser-use Agent ile devam (add_new_task) thread_id=%s — takip görevi, URL yeniden navigasyonu atlanır",
-                    tid,
-                )
+                if hints_list:
+                    logger.info(
+                        "Aynı browser-use Agent ile devam (add_new_task) thread_id=%s — HITL / kullanıcı ipuçları",
+                        tid,
+                    )
+                else:
+                    logger.info(
+                        "Aynı browser-use Agent ile devam (add_new_task) thread_id=%s — followup_on_live_session",
+                        tid,
+                    )
             elif continuation and cached is None:
                 logger.warning(
                     "HITL devamı bekleniyordu ancak önbellekte Agent yok; yeni Agent oluşturuluyor thread_id=%s",
@@ -656,6 +770,7 @@ class BrowserUseRunner:
             else:
                 if cached is not None:
                     await dispose_cached_agent(thread_id)
+                    clear_thread_browser_continuity(thread_id)
                 agent = Agent(
                     task=full_task,
                     llm=self._llm(),
@@ -760,6 +875,7 @@ class BrowserUseRunner:
                     holder.get("url"),
                     str(reason_raw) if reason_raw is not None else None,
                 )
+                record_thread_last_browser_url(thread_id, holder.get("url"))
                 return BrowserRunResult(
                     status=BrowserRunStatus.NEEDS_HUMAN,
                     summary="",
@@ -780,7 +896,7 @@ class BrowserUseRunner:
             )
             summary = str(final_text).strip() if final_text else done_msg
             clear_pending_hitl(thread_id)
-            pop_cached_agent(thread_id)
+            record_thread_last_browser_url(thread_id, holder.get("url"))
             _clear_run_ctx(thread_id)
             return BrowserRunResult(
                 status=BrowserRunStatus.DONE,
