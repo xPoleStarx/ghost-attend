@@ -16,6 +16,7 @@ from app.agent.output import last_assistant_text_for_telegram
 from app.telegram.locks import chat_turn
 from app.run_control import (
     clear_stop,
+    enqueue_user_correction,
     is_browser_run_active_async,
     register_progress_sender,
     request_stop,
@@ -150,6 +151,17 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not text:
         return
     chat_id = update.effective_chat.id
+    tid = str(chat_id)
+    if await is_browser_run_active_async(tid):
+        await enqueue_user_correction(tid, text)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Not alındı. Çalışan tarayıcı görevi bir sonraki adımda duracak ve mesajın "
+                "dikkate alınması için sana yanıt isteyecek; oturum açık kalır."
+            ),
+        )
+        return
     graph = context.application.bot_data["graph"]
     config: dict[str, Any] = {"configurable": {"thread_id": str(chat_id)}}
 

@@ -28,6 +28,7 @@ from app.config.settings import Settings
 from app.domain.schemas import BrowserRunResult, BrowserRunStatus
 from app.run_control import (
     clear_stop,
+    drain_mid_run_corrections,
     emit_progress,
     is_stop_requested,
     mark_browser_run_active,
@@ -344,6 +345,78 @@ def _task_has_inline_credentials(full_task: str) -> bool:
     return bool(_INLINE_EMAIL_SLASH_PASSWORD.search(full_task))
 
 
+# OBS vb.: "Kullanıcı adı: x, Şifre: y" — e-posta zorunlu değil.
+_INLINE_USER_LABEL = re.compile(
+    r"(?i)(kullanıcı\s*adı|kullanici\s*adi|username|user\s*name|user\s*id)\s*[:，,]\s*([^\s\n,;]{2,})",
+)
+_INLINE_PASS_LABEL = re.compile(
+    r"(?i)(şifre|sifre|password)\s*[:，,]\s*([^\s\n,;]{2,})",
+)
+
+
+def _task_has_actionable_login_creds(full_task: str) -> bool:
+    """Görevde doldurulabilir kimlik bilgisi var mı (tekrarlayan giriş hatası HITL için)."""
+    t = full_task or ""
+    if _task_has_inline_credentials(t):
+        return True
+    if _INLINE_PASSWORD_QUOTED.search(t) and (_INLINE_USER_LABEL.search(t) or _INLINE_EMAIL.search(t)):
+        return True
+    return bool(_INLINE_USER_LABEL.search(t) and _INLINE_PASS_LABEL.search(t))
+
+
+def _collapse_ws_lower(s: str) -> str:
+    return " ".join((s or "").lower().replace("\n", " ").split())
+
+
+def _eval_memory_blob(agent_output: Any) -> str:
+    """Kimlik hatası tespiti: plan (next_goal) hariç — yalnızca değerlendirme + hafıza."""
+    cs = getattr(agent_output, "current_state", None)
+    if cs is None:
+        return ""
+    ev = str(getattr(cs, "evaluation_previous_goal", None) or "")
+    mem = str(getattr(cs, "memory", None) or "")
+    return _collapse_ws_lower(f"{ev} {mem}")
+
+
+def _auth_failure_class_from_agent_state(agent_output: Any) -> str | None:
+    """Aynı site hatası üst üste gelince streak (OBS: kullanıcı adı/şifre yanlış)."""
+    b = _eval_memory_blob(agent_output)
+    if not b:
+        return None
+    if (
+        "kullanıcı adı veya şifre yanlış" in b
+        or "kullanici adi veya sifre yanlis" in b
+        or (
+            "username or password" in b
+            and ("incorrect" in b or "wrong" in b or "invalid" in b)
+        )
+    ):
+        return "invalid_credentials"
+    if "incorrect password" in b or "wrong password" in b:
+        return "invalid_credentials"
+    if "invalid credentials" in b:
+        return "invalid_credentials"
+    return None
+
+
+def _summary_asks_for_credentials(text: str) -> bool:
+    """İç ajan done ile kullanıcıdan kimlik istediğinde (NEEDS_HUMAN kaçırıldıysa) pending HITL için."""
+    b = _collapse_ws_lower(text or "")
+    if not b:
+        return False
+    asks_tr = (
+        "kullanıcı adı" in b and "şifre" in b,
+        "kullanici adi" in b and "sifre" in b,
+        "paylaşır mısınız" in b and ("şifre" in b or "sifre" in b),
+        "ileti" in b and "şifre" in b,
+    )
+    asks_en = (
+        "username" in b and "password" in b and ("provide" in b or "share" in b or "need" in b or "enter" in b),
+        "password" in b and "need" in b,
+    )
+    return any(asks_tr) or any(asks_en)
+
+
 def _agent_suggests_sensitive(agent_output: Any, url: str, title: str) -> bool:
     if agent_output is None:
         return False
@@ -460,6 +533,68 @@ def _hitl_question(
                     "These details are only used for this session; you accept the sharing risk.",
                 ]
             )
+        return "\n".join(lines)[:4090]
+    if reason == "repeated_auth_failure":
+        if tr:
+            lines = [
+                "Aynı giriş bilgileriyle birkaç kez denedim; site sürekli kullanıcı adı veya şifrenin yanlış olduğunu söylüyor.",
+                f"Sayfa: {u}",
+            ]
+            if ti:
+                lines.append(f"Başlık: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append(f"Özet: {ctx[:1800]}")
+            lines.extend(
+                [
+                    "",
+                    "Küçük bir yazım farkı olabilir (nokta, büyük/küçük harf, özel karakter). "
+                    "Lütfen kurumdaki tam kullanıcı adı ve şifreyi kontrol et; düzeltilmiş bilgiyi veya kısa bir talimatı tek mesajda yaz.",
+                ]
+            )
+        else:
+            lines = [
+                "I tried logging in several times with the credentials in the task; the site keeps saying the username or password is wrong.",
+                f"Page: {u}",
+            ]
+            if ti:
+                lines.append(f"Title: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append(f"Summary: {ctx[:1800]}")
+            lines.extend(
+                [
+                    "",
+                    "A small detail may be wrong (punctuation, case, special characters). "
+                    "Please verify your exact username and password, then reply in one message with corrected values or short instructions.",
+                ]
+            )
+        return "\n".join(lines)[:4090]
+    if reason == "user_mid_run_message":
+        if tr:
+            lines = [
+                "Çalışırken gönderdiğin mesajı aldım; tarayıcı oturumunu koruyarak durdurdum.",
+                f"Sayfa: {u}",
+            ]
+            if ti:
+                lines.append(f"Başlık: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append(f"Senin mesajın:\n{ctx[:3000]}")
+            lines.append("")
+            lines.append("Devam için düzeltmeyi veya talimatı onayla; gerekirse güncellenmiş şifre/kullanıcı adını tek mesajda yaz.")
+        else:
+            lines = [
+                "I received your message while working and paused with the browser session kept open.",
+                f"Page: {u}",
+            ]
+            if ti:
+                lines.append(f"Title: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append(f"Your message:\n{ctx[:3000]}")
+            lines.append("")
+            lines.append("Reply in one message to confirm or send corrected credentials / instructions to continue.")
         return "\n".join(lines)[:4090]
     if tr:
         head = (
@@ -580,6 +715,8 @@ def _init_run_ctx(
         "last_progress_sig": "",
         "progress_sent_count": 0,
         "login_surface_dom_defers": 0,
+        "auth_error_streak": 0,
+        "last_auth_error_sig": None,
     }
     _run_ctx[tid] = ctx
     return ctx
@@ -691,6 +828,50 @@ class BrowserUseRunner:
             hl = ctx.get("hints_list") or []
             if not _looks_like_login_surface(url, title):
                 ctx["login_surface_dom_defers"] = 0
+                ctx["auth_error_streak"] = 0
+                ctx["last_auth_error_sig"] = None
+
+            corrections = await drain_mid_run_corrections(tid)
+            if corrections:
+                ctx["reason"] = "user_mid_run_message"
+                ctx["agent_context"] = "\n---\n".join(corrections)[:2500]
+                ctx["stop"] = True
+                logger.info(
+                    "HITL trigger: mid-run user message(s) count=%s thread_id=%s",
+                    len(corrections),
+                    tid,
+                )
+                await _maybe_emit_agent_progress_narration(tid, step, agent_output)
+                return
+
+            auth_sig = _auth_failure_class_from_agent_state(agent_output)
+            th = self._settings.auth_failure_escalation_threshold
+            if auth_sig is None:
+                ctx["auth_error_streak"] = 0
+                ctx["last_auth_error_sig"] = None
+            elif _looks_like_login_surface(url, title) and _task_has_actionable_login_creds(ft):
+                prev = ctx.get("last_auth_error_sig")
+                if prev == auth_sig:
+                    ctx["auth_error_streak"] = int(ctx.get("auth_error_streak") or 0) + 1
+                else:
+                    ctx["auth_error_streak"] = 1
+                ctx["last_auth_error_sig"] = auth_sig
+                if int(ctx["auth_error_streak"]) >= th:
+                    ctx["reason"] = "repeated_auth_failure"
+                    ctx["agent_context"] = _agent_context_blurb(agent_output)
+                    ctx["stop"] = True
+                    logger.info(
+                        "HITL trigger: repeated auth failure streak=%s sig=%s thread_id=%s",
+                        ctx["auth_error_streak"],
+                        auth_sig,
+                        tid,
+                    )
+                    await _maybe_emit_agent_progress_narration(tid, step, agent_output)
+                    return
+            else:
+                ctx["auth_error_streak"] = 0
+                ctx["last_auth_error_sig"] = None
+
             # Kullanıcıdan ek bilgi geldiyse (interrupt sonrası): giriş sayfasında tekrar durdurma —
             # aksi halde her tur login.aspx yüzünden kesiliyor, tarayıcı sıfırlanıyor, döngü oluşuyor.
             if not hl:
@@ -703,9 +884,9 @@ class BrowserUseRunner:
                             "HITL defer: görev giriş yapmadan gözlem/doğrulama istiyor — login yüzeyi kesilmiyor"
                         )
                         return
-                    if _task_has_inline_credentials(ft):
+                    if _task_has_actionable_login_creds(ft):
                         logger.info(
-                            "HITL defer: görev metninde satır içi e-posta/şifre var — iç ajanın doldurmasına izin veriliyor"
+                            "HITL defer: görevde satır içi giriş bilgisi — iç ajanın doldurmasına izin veriliyor"
                         )
                         return
                     if _login_dom_looks_unready(browser_state):
@@ -895,7 +1076,15 @@ class BrowserUseRunner:
                 "Görev tamamlandı." if holder.get("reply_lang") == "tr" else "Task completed."
             )
             summary = str(final_text).strip() if final_text else done_msg
-            clear_pending_hitl(thread_id)
+            last_u = holder.get("url") or ""
+            if _looks_like_login_surface(last_u, "") and _summary_asks_for_credentials(summary):
+                record_pending_hitl(thread_id, last_u, "login_or_auth_surface")
+                logger.info(
+                    "done metni kimlik istiyor — pending HITL kaydı thread_id=%s",
+                    thread_id,
+                )
+            else:
+                clear_pending_hitl(thread_id)
             record_thread_last_browser_url(thread_id, holder.get("url"))
             _clear_run_ctx(thread_id)
             return BrowserRunResult(

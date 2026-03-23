@@ -32,6 +32,10 @@ def _hitl_reason_label(reason: str | None) -> str:
         return "login or identity screen"
     if reason == "model_indicated_sensitive_step":
         return "sensitive step (password, OTP, 2FA, etc.)"
+    if reason == "repeated_auth_failure":
+        return "repeated login/auth failure"
+    if reason == "user_mid_run_message":
+        return "user message during browser run"
     return str(reason)
 
 

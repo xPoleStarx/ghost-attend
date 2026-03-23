@@ -8,7 +8,9 @@ import pytest
 
 from app.run_control import (
     clear_stop,
+    drain_mid_run_corrections,
     emit_progress,
+    enqueue_user_correction,
     is_browser_run_active_async,
     is_stop_requested,
     mark_browser_run_active,
@@ -102,3 +104,24 @@ async def test_wait_stop_race_run_finishes_first_cancel_stop_task():
 
     assert run_task.result() == "done"
     assert not is_stop_requested(tid)
+
+
+@pytest.mark.asyncio
+async def test_enqueue_then_drain_mid_run_corrections():
+    tid = "test-mid-run-1"
+    clear_stop(tid)
+    await enqueue_user_correction(tid, "  first  ")
+    await enqueue_user_correction(tid, "second")
+    drained = await drain_mid_run_corrections(tid)
+    assert drained == ["first", "second"]
+    assert await drain_mid_run_corrections(tid) == []
+
+
+@pytest.mark.asyncio
+async def test_request_stop_clears_mid_run_queue():
+    tid = "test-mid-run-2"
+    clear_stop(tid)
+    await enqueue_user_correction(tid, "orphan")
+    request_stop(tid)
+    assert await drain_mid_run_corrections(tid) == []
+    clear_stop(tid)

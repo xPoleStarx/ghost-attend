@@ -10,6 +10,8 @@ _stop_events: dict[str, asyncio.Event] = {}
 _browser_run_lock = asyncio.Lock()
 _browser_run_active: set[str] = set()
 _progress_senders: dict[str, Callable[[str], Awaitable[None]]] = {}
+# Tarayıcı adımları sürerken Telegram metinleri (chat_turn kilidi dışında) burada birikir.
+_mid_run_queues: dict[str, asyncio.Queue[str]] = {}
 
 
 def _event_for(thread_id: str) -> asyncio.Event:
@@ -21,8 +23,52 @@ def _event_for(thread_id: str) -> asyncio.Event:
     return ev
 
 
+def _mid_run_queue_for(thread_id: str) -> asyncio.Queue[str]:
+    tid = str(thread_id)
+    q = _mid_run_queues.get(tid)
+    if q is None:
+        q = asyncio.Queue()
+        _mid_run_queues[tid] = q
+    return q
+
+
+def clear_mid_run_queue(thread_id: str) -> None:
+    """Durdurma veya iptal sonrası bekleyen ara mesajları at."""
+    tid = str(thread_id)
+    q = _mid_run_queues.pop(tid, None)
+    if q is None:
+        return
+    while True:
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+
+async def enqueue_user_correction(thread_id: str, text: str) -> None:
+    """Tarayıcı çalışırken kullanıcı düzeltmesi — on_step bir sonraki adımda tüketir."""
+    chunk = (text or "").strip()[:4000]
+    if not chunk:
+        return
+    await _mid_run_queue_for(thread_id).put(chunk)
+
+
+async def drain_mid_run_corrections(thread_id: str) -> list[str]:
+    q = _mid_run_queues.get(str(thread_id))
+    if q is None:
+        return []
+    out: list[str] = []
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    return out
+
+
 def request_stop(thread_id: str) -> None:
     """Telegram /stop: tarayıcı döngüsü should_stop ile kesilir."""
+    clear_mid_run_queue(thread_id)
     _event_for(thread_id).set()
 
 
@@ -31,6 +77,7 @@ def clear_stop(thread_id: str) -> None:
     ev = _stop_events.get(tid)
     if ev is not None:
         ev.clear()
+    clear_mid_run_queue(tid)
 
 
 def is_stop_requested(thread_id: str) -> bool:

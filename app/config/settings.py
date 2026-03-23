@@ -27,6 +27,9 @@ class Settings(BaseSettings):
 
     log_redact_telegram_token: bool = Field(default=True)
 
+    # Aynı sınıf kimlik hatası (ör. kullanıcı adı/şifre yanlış) bu kadar kez üst üste görülünce HITL.
+    auth_failure_escalation_threshold: int = Field(default=2, ge=1, le=20)
+
 
 @lru_cache
 def get_settings() -> Settings:

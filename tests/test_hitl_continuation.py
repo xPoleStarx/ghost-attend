@@ -5,12 +5,13 @@ from types import SimpleNamespace
 from app.adapters.browser_use_runner import (
     _login_dom_looks_unready,
     _merge_task,
+    _task_has_actionable_login_creds,
     _task_has_inline_credentials,
     _task_suppresses_login_surface_hitl,
     infer_reply_language,
     parse_reply_lang_directive,
 )
-from app.agent.tools import _continuation_block_after_hitl
+from app.agent.tools import _continuation_block_after_hitl, _hitl_reason_label
 from app.domain.schemas import BrowserRunResult, BrowserRunStatus
 
 
@@ -94,3 +95,13 @@ def test_login_dom_ready_enough_interactive_nodes():
 def test_inline_credentials_email_slash_password():
     t = "Trendyol.com sitesine git ve seyfullahkorkmaz115@gmail.com / 123456 bilgileriyle giriş yap."
     assert _task_has_inline_credentials(t)
+
+
+def test_hitl_reason_label_new_reasons():
+    assert "repeated" in _hitl_reason_label("repeated_auth_failure").lower()
+    assert "browser" in _hitl_reason_label("user_mid_run_message").lower()
+
+
+def test_actionable_login_creds_covers_obs_username_password():
+    t = "Kullanıcı adı: foo, Şifre: bar ile giriş yap."
+    assert _task_has_actionable_login_creds(t)
