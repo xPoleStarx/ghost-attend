@@ -12,6 +12,7 @@ import os
 
 try:
     from app.agent.task_agent import build_compiled_graph  # noqa: F401
+    from app.adapters.browser_session_holder import apply_browser_use_event_timeouts
     from app.config.settings import get_settings
     from app.observability.logging import configure_logging
     from app.telegram.bot import run_bot
@@ -31,6 +32,7 @@ except ModuleNotFoundError as e:
 
 def main() -> None:
     settings = get_settings()
+    apply_browser_use_event_timeouts(settings)
     configure_logging(
         os.environ.get("LOG_LEVEL", "INFO"),
         redact_telegram_token=settings.log_redact_telegram_token,

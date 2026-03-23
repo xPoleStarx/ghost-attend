@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from app.adapters.browser_agent_holder import clear_cached_agent_sync
 from app.adapters.hitl_pending import clear_pending_hitl
@@ -41,8 +43,74 @@ def clear_thread_browser_continuity(thread_id: str) -> None:
     _thread_last_browser_url.pop(str(thread_id), None)
 
 # browser-use _navigate_and_wait çapraz alan için sabit 8 sn kullanır; holder üzerinden yüksütülür.
-_nav_readiness_seconds: dict[str, float] = {"value": 18.0}
+_nav_readiness_seconds: dict[str, float] = {"value": 12.0}
+# Aynı site içi navigate için readiness (eski 3 sn SPA’larda kırılıyordu).
+_same_origin_nav_timeout: dict[str, float] = {"value": 12.0}
+# Bu anahtar hostlar için her zaman tam readiness (youtube.com aynı-origin kısayolu yok).
+_nav_always_full_readiness_hosts: dict[str, str] = {"value": "youtube.com,www.youtube.com,m.youtube.com"}
+# NavigateToUrlEvent varsayılanı 'load'; SPA / YouTube için domcontentloaded (Settings ile hizalı).
+_nav_wait_until: dict[str, str] = {"value": "domcontentloaded"}
 _nav_readiness_patch_done: bool = False
+
+
+def _host_key(netloc: str) -> str:
+    h = (netloc or "").lower()
+    if h.startswith("www."):
+        return h[4:]
+    return h
+
+
+def _parse_readiness_host_list(raw: str) -> frozenset[str]:
+    parts = []
+    for x in (raw or "").split(","):
+        s = x.strip().lower()
+        if not s:
+            continue
+        if s.startswith("www."):
+            s = s[4:]
+        parts.append(s)
+    return frozenset(parts)
+
+
+def _host_needs_full_readiness(netloc: str, always_full: frozenset[str]) -> bool:
+    hk = _host_key(netloc)
+    if hk in always_full:
+        return True
+    return any(hk.endswith("." + p) for p in always_full)
+
+
+def resolve_nav_readiness_timeout_seconds(
+    url: str,
+    current_url: str,
+    *,
+    full_readiness: float,
+    same_origin_timeout: float,
+    always_full_readiness_hosts_csv: str,
+) -> float:
+    """Aynı site / tam readiness kuralı — birim testi ve _patched_navigate_and_wait için."""
+    if not url.startswith("http") or not current_url.startswith("http"):
+        return float(full_readiness)
+    pu, pc = urlparse(url), urlparse(current_url)
+    same_site = _host_key(pu.netloc) == _host_key(pc.netloc)
+    always_full = _parse_readiness_host_list(always_full_readiness_hosts_csv)
+    if same_site:
+        if _host_needs_full_readiness(pu.netloc, always_full):
+            return float(full_readiness)
+        return float(same_origin_timeout)
+    return float(full_readiness)
+
+
+def apply_browser_use_event_timeouts(settings: "Settings") -> None:
+    """bubus TIMEOUT_* env — browser_use.events içindeki event_timeout default_factory ilk olay öncesi okunur."""
+    os.environ.setdefault("TIMEOUT_ScreenshotEvent", str(float(settings.browser_timeout_screenshot_event)))
+    os.environ.setdefault(
+        "TIMEOUT_BrowserStateRequestEvent",
+        str(float(settings.browser_timeout_browser_state_request)),
+    )
+    os.environ.setdefault(
+        "TIMEOUT_NavigateToUrlEvent",
+        str(float(settings.browser_timeout_navigate_url_event)),
+    )
 
 
 def _lock_for(thread_id: str) -> asyncio.Lock:
@@ -72,13 +140,15 @@ def _ensure_nav_readiness_patch() -> None:
         if timeout is None:
             target = self.session_manager.get_target(target_id)
             current_url = target.url
-            same_domain = (
-                url.split("/")[2] == current_url.split("/")[2]
-                if url.startswith("http") and current_url.startswith("http")
-                else False
+            timeout = resolve_nav_readiness_timeout_seconds(
+                url,
+                current_url,
+                full_readiness=float(_nav_readiness_seconds["value"]),
+                same_origin_timeout=float(_same_origin_nav_timeout["value"]),
+                always_full_readiness_hosts_csv=str(_nav_always_full_readiness_hosts["value"]),
             )
-            timeout = 3.0 if same_domain else float(_nav_readiness_seconds["value"])
-        await _orig(self, url, target_id, timeout=timeout, wait_until=wait_until)
+        wu = str(_nav_wait_until["value"])
+        await _orig(self, url, target_id, timeout=timeout, wait_until=wu)
 
     BrowserSession._navigate_and_wait = _patched_navigate_and_wait  # type: ignore[method-assign]
     _nav_readiness_patch_done = True
@@ -119,10 +189,14 @@ def _register_reconnection_failed_cleanup(sess: Any, thread_id: str) -> None:
 
 async def get_session(thread_id: str, settings: "Settings") -> Any:
     """Aynı sohbet için yeniden kullanılan oturum; ilk çağrıda oluşturulur."""
-    from browser_use import BrowserSession
-
+    apply_browser_use_event_timeouts(settings)
     _nav_readiness_seconds["value"] = float(settings.browser_nav_readiness_timeout)
+    _same_origin_nav_timeout["value"] = float(settings.browser_same_origin_nav_timeout)
+    _nav_always_full_readiness_hosts["value"] = str(settings.browser_nav_always_full_readiness_hosts)
+    _nav_wait_until["value"] = str(settings.browser_navigate_wait_until)
     _ensure_nav_readiness_patch()
+
+    from browser_use import BrowserSession
 
     async with _lock_for(thread_id):
         existing = _sessions.get(thread_id)

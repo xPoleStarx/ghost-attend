@@ -18,6 +18,8 @@ from app.adapters.hitl_pending import (
     record_pending_hitl,
     take_synthetic_hints_if_orphan,
 )
+from app.adapters.browser_action_guard import attach_navigate_policy, build_navigate_policy_from_task
+from app.adapters.ghost_browser_tools import build_ghost_guarded_tools
 from app.adapters.browser_session_holder import (
     clear_thread_browser_continuity,
     get_session,
@@ -149,6 +151,47 @@ def extract_primary_http_url(task_text: str) -> str | None:
     return m.group(0).rstrip(".,);]\"")
 
 
+def extract_all_http_urls(task_text: str) -> list[str]:
+    """Görev + ipuçlarındaki tüm http(s) URL'leri (sıra korunur, yinelenenler elenir)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _URL_IN_TEXT.finditer(task_text or ""):
+        u = m.group(0).rstrip(".,);]\"")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _authoritative_targets_block(urls: list[str]) -> str:
+    if not urls:
+        return ""
+    lines = "\n".join(f"- {u}" for u in urls)
+    return (
+        "[Authoritative user targets — follow strictly]\n"
+        "The user explicitly provided these URL(s) as entry points or goals:\n"
+        f"{lines}\n\n"
+        "Rules:\n"
+        "1. Treat these URLs as correct unless the page shows a clear hard failure (e.g. HTTP error page, explicit not-found for that resource on the site).\n"
+        "2. Readiness or load timeouts, blank-looking first paint, or missing thumbnails are NOT evidence that the URL is wrong — retry on the same URL "
+        "(scroll, wait, reload in-tab) before abandoning it.\n"
+        "3. Do not switch to site search or invent a different channel/page identity to replace these URLs unless the task explicitly asks you to search "
+        "or the site clearly confirms this URL is invalid.\n"
+        "4. Never navigate to a different YouTube @handle than the one(s) in these URLs unless the user task explicitly requires finding another channel.\n"
+        "5. In browser-use, the tool actions `navigate`, `search`, and `evaluate` end the action list for that step — use exactly one of them per step "
+        "without pairing with `wait` or `click` in the same step.\n\n"
+    )
+
+
+_AGENT_EXTEND_SYSTEM_MESSAGE = (
+    "GhostMyShit (Shitty) reliability addendum:\n"
+    "- The tool actions `navigate`, `search`, and `evaluate` terminate the multi-action queue for that step. "
+    "Never output another action after them in the same step; use the next step for follow-up (e.g. wait or click).\n"
+    "- When the user message lists explicit http(s) URLs, treat them as authoritative targets. "
+    "A page readiness timeout or temporarily empty-looking DOM is not sufficient proof to abandon them for search or guessed alternate URLs.\n"
+)
+
+
 def _normalize_site_host(url: str) -> str | None:
     try:
         p = urlparse((url or "").strip())
@@ -253,8 +296,10 @@ _RESUME_PRIORITY_NOTE = (
 
 def _merge_task(task: str, hints: list[str], reply_lang: str) -> str:
     lang_name = "Turkish" if reply_lang == "tr" else "English"
+    user_blob = "\n".join([task.strip()] + [h.strip() for h in hints if h.strip()])
+    authority = _authoritative_targets_block(extract_all_http_urls(user_blob))
     bootstrap = _TASK_BOOTSTRAP_TEMPLATE.format(user_lang=lang_name)
-    base = (bootstrap + task.strip()).strip()
+    base = (bootstrap + authority + task.strip()).strip()
     if not hints:
         return base
     extra = "\n".join(h.strip() for h in hints if h.strip())
@@ -596,6 +641,38 @@ def _hitl_question(
             lines.append("")
             lines.append("Reply in one message to confirm or send corrected credentials / instructions to continue.")
         return "\n".join(lines)[:4090]
+    if reason == "stuck_subgoal":
+        if tr:
+            lines = [
+                "Aynı hedef üzerinde çok fazla tekrar oldu; sayfa durumu ilerlemedi. Tarayıcıyı güvenli şekilde durdurdum.",
+                f"Sayfa: {u}",
+            ]
+            if ti:
+                lines.append(f"Başlık: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append("Ne denendi / son durum (özet):")
+                lines.append(ctx[:3200])
+            lines.extend(
+                [
+                    "",
+                    "Görevi netleştirmek veya farklı bir yol istiyorsan kısa yaz; oturum açık kaldıysa devam edebilirim.",
+                ]
+            )
+        else:
+            lines = [
+                "The browser agent hit a repeated loop with no real progress on the same subgoal, so I stopped safely.",
+                f"Page: {u}",
+            ]
+            if ti:
+                lines.append(f"Title: {ti}")
+            if ctx:
+                lines.append("")
+                lines.append("What was tried / current state (summary):")
+                lines.append(ctx[:3200])
+            lines.append("")
+            lines.append("Reply with clearer constraints or a different approach if you want to continue.")
+        return "\n".join(lines)[:4090]
     if tr:
         head = (
             "Otomasyonun devam etmesi için senden bilgi gerekiyor.\n"
@@ -626,6 +703,33 @@ def _agent_context_blurb(agent_output: Any) -> str | None:
     parts = [getattr(cs, "next_goal", None), getattr(cs, "memory", None)]
     blob = "\n".join(str(p).strip() for p in parts if p)
     return blob[:2500] if blob else None
+
+
+def _stuck_context_note(agent_output: Any, reply_lang: str) -> str:
+    """HITL stuck_subgoal için kullanıcıya giden özet (DOM indeksi yok)."""
+    cs = getattr(agent_output, "current_state", None) if agent_output else None
+    if cs is None:
+        return ""
+    ev = str(getattr(cs, "evaluation_previous_goal", None) or "").strip()
+    mem = str(getattr(cs, "memory", None) or "").strip()
+    ng = str(getattr(cs, "next_goal", None) or "").strip()
+    if reply_lang == "tr":
+        parts: list[str] = []
+        if ev:
+            parts.append(f"Son değerlendirme: {ev[:1600]}")
+        if mem:
+            parts.append(f"Hafıza: {mem[:1600]}")
+        if ng:
+            parts.append(f"Tekrarlanan hedef: {ng[:800]}")
+        return "\n".join(parts)[:3500]
+    parts_en: list[str] = []
+    if ev:
+        parts_en.append(f"Last evaluation: {ev[:1600]}")
+    if mem:
+        parts_en.append(f"Memory: {mem[:1600]}")
+    if ng:
+        parts_en.append(f"Repeated goal: {ng[:800]}")
+    return "\n".join(parts_en)[:3500]
 
 
 # thread_id başına: HITL bayrakları + her run_task turunda güncellenen görev metni (Agent önbellekte
@@ -785,6 +889,7 @@ class BrowserUseRunner:
             if syn:
                 hints_list = list(syn)
         combined_for_lang = "\n".join([task.strip()] + [h.strip() for h in hints_list if h.strip()])
+        user_blob = combined_for_lang
         lang = (reply_lang or infer_reply_language(combined_for_lang)).lower()
         if lang not in ("tr", "en"):
             lang = "en"
@@ -910,6 +1015,32 @@ class BrowserUseRunner:
                     ctx["agent_context"] = _agent_context_blurb(agent_output)
                     ctx["stop"] = True
                     logger.info("HITL trigger: agent output suggests sensitive step")
+                    await _maybe_emit_agent_progress_narration(tid, step, agent_output)
+                    return
+
+            if not ctx.get("stop") and not _looks_like_login_surface(url, title):
+                try:
+                    ld = getattr(getattr(agent, "state", None), "loop_detector", None)
+                    if ld is not None:
+                        st_th = int(self._settings.browser_stuck_stagnation_threshold)
+                        rp_th = int(self._settings.browser_stuck_repetition_threshold)
+                        if ld.consecutive_stagnant_pages >= st_th or ld.max_repetition_count >= rp_th:
+                            ctx["reason"] = "stuck_subgoal"
+                            ctx["agent_context"] = _stuck_context_note(
+                                agent_output, str(ctx.get("reply_lang") or "en")
+                            )
+                            ctx["stop"] = True
+                            logger.info(
+                                "HITL trigger: stuck_subgoal stagnant=%s repetition=%s thread_id=%s",
+                                ld.consecutive_stagnant_pages,
+                                ld.max_repetition_count,
+                                tid,
+                            )
+                            await _maybe_emit_agent_progress_narration(tid, step, agent_output)
+                            return
+                except Exception:
+                    logger.debug("loop/stuck detector skipped", exc_info=True)
+
             await _maybe_emit_agent_progress_narration(tid, step, agent_output)
 
         async def should_stop() -> bool:
@@ -920,6 +1051,14 @@ class BrowserUseRunner:
         from browser_use import Agent
 
         browser_session = await get_session(thread_id, self._settings)
+        attach_navigate_policy(browser_session, build_navigate_policy_from_task(user_blob))
+        _urls_for_ground = extract_all_http_urls(user_blob)
+        _ground_truth = "\n".join(_urls_for_ground[:30]) if _urls_for_ground else None
+        _agent_extras = {
+            "tools": build_ghost_guarded_tools(),
+            "extend_system_message": _AGENT_EXTEND_SYSTEM_MESSAGE,
+            "ground_truth": _ground_truth,
+        }
         try:
             if continuation and cached is not None:
                 agent = cached
@@ -946,6 +1085,7 @@ class BrowserUseRunner:
                     register_new_step_callback=on_step,
                     register_should_stop_callback=should_stop,
                     step_timeout=self._settings.browser_step_timeout,
+                    **_agent_extras,
                 )
                 set_cached_agent(thread_id, agent)
             else:
@@ -959,6 +1099,7 @@ class BrowserUseRunner:
                     register_new_step_callback=on_step,
                     register_should_stop_callback=should_stop,
                     step_timeout=self._settings.browser_step_timeout,
+                    **_agent_extras,
                 )
                 set_cached_agent(thread_id, agent)
 
